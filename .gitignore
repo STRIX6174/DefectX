@@ -1,0 +1,26 @@
+# IDE
+.vscode/
+
+# Design docs
+总设计讨论MD/
+设计废稿/
+# Build output
+build/
+
+# IDE
+.vscode/
+
+# Qt / CMake autogen
+*_autogen/
+
+# Binary / lib
+*.exe
+*.obj
+*.a
+*.dll
+
+# Logs
+*.log
+
+# Output images
+_output/

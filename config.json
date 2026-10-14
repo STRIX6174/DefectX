@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "qc": {
+    "laplacian_threshold": 100.0,
+    "overexposure_high": 245,
+    "underexposure_low": 10
+  },
+  "defect": {
+    "crazing": {
+      "edge_density": 0.05,
+      "min_area": 50
+    },
+    "inclusion": {
+      "block_size": 31,
+      "c_value": 3,
+      "min_area": 30
+    },
+    "patches": {
+      "hist_diff": 0.3,
+      "local_variance": 500.0
+    },
+    "pitted_surface": {
+      "tophat_kernel": 15,
+      "blob_count_min": 5
+    },
+    "scratches": {
+      "canny_low": 50,
+      "canny_high": 150,
+      "min_length": 80,
+      "aspect_ratio": 3.0
+    },
+    "rolled_in_scale": {
+      "block_size": 21,
+      "close_kernel": 5
+    }
+  },
+  "gate": {
+    "miss_rate_max": 0.05,
+    "overkill_rate_max": 0.10,
+    "timeout_per_image_ms": 5000
+  }
+}
