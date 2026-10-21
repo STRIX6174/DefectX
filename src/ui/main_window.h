@@ -112,6 +112,8 @@ private slots:
     void onFinished(const model::RunReport& report);
     void onGridClicked(const QModelIndex& index);
     void onFilterChanged();
+    void onPrevDefect();
+    void onNextDefect();
 
 private:
     void setupUi();
@@ -121,6 +123,7 @@ private:
     void setupStatusBar();
     void updateStatusBar(const model::RunReport& report);
     void showPreview(const ResultItem& item);
+    void updateDefectDisplay();
     void setUiEnabled(bool enabled);
 
     QToolBar*   toolbar_       = nullptr;
@@ -140,8 +143,18 @@ private:
     ResultListModel*    gridModel_  = nullptr;
     ResultFilterProxy*  gridFilter_ = nullptr;
 
-    QGraphicsView*   previewView_   = nullptr;
-    QGraphicsScene*  previewScene_  = nullptr;
+    QGraphicsView*  defectZoomView_  = nullptr;
+    QGraphicsScene* defectZoomScene_ = nullptr;
+    QGraphicsView*  overviewView_    = nullptr;
+    QGraphicsScene* overviewScene_   = nullptr;
+
+    QPushButton*   prevDefectBtn_   = nullptr;
+    QPushButton*   nextDefectBtn_   = nullptr;
+    QLabel*        defectNavLabel_  = nullptr;
+
+    QString                          previewImagePath_;
+    std::vector<model::DefectRecord> previewDefects_;
+    int                              previewDefectIdx_ = 0;
 
     QLabel*    statusTotal_    = nullptr;
     QLabel*    statusDefect_   = nullptr;

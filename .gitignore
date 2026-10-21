@@ -6,6 +6,7 @@
 设计废稿/
 # Build output
 build/
+build-release/
 
 # IDE
 .vscode/

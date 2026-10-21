@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui LinguistTools)
 
 # ---- Core Model Library (header-only) ----
 add_library(qtest_model INTERFACE)
@@ -86,4 +86,16 @@ target_link_libraries(qtest PRIVATE
     qtest_algorithm
     qtest_model
     Qt6::Widgets
+)
+
+qt6_add_translations(qtest
+    TS_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui/lang/qtest_zh_CN.ts
+    QM_FILES_OUTPUT_VARIABLE qm_files
+)
+
+add_custom_command(TARGET qtest POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:qtest>/lang"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${qm_files} "$<TARGET_FILE_DIR:qtest>/lang"
+    COMMENT "Copying .qm translation files to output/lang/"
 )

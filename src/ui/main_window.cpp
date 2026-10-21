@@ -19,6 +19,7 @@
 
 #include <filesystem>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 namespace qf {
 namespace ui {
@@ -224,7 +225,7 @@ void ThumbnailDelegate::paint(QPainter* painter,
     } else {
         painter->fillRect(rect, QColor(60, 60, 60));
         painter->setPen(Qt::gray);
-        painter->drawText(rect, Qt::AlignCenter, "NO IMG");
+        painter->drawText(rect, Qt::AlignCenter, tr("NO IMG"));
     }
 
     int status = index.data(Qt::UserRole + 1).toInt();
@@ -238,19 +239,19 @@ void ThumbnailDelegate::paint(QPainter* painter,
         break;
     case model::ImageStatus::Invalid_Qc:
         badgeColor = QColor(220, 180, 30);
-        badgeText  = "QC";
+        badgeText  = tr("QC");
         break;
     case model::ImageStatus::Pass:
         badgeColor = QColor(50, 180, 50);
-        badgeText  = "OK";
+        badgeText  = tr("OK");
         break;
     case model::ImageStatus::LoadFailed:
         badgeColor = QColor(120, 120, 120);
-        badgeText  = "ERR";
+        badgeText  = tr("ERR");
         break;
     default:
         badgeColor = QColor(100, 100, 100);
-        badgeText  = "...";
+        badgeText  = tr("...");
         break;
     }
 
@@ -323,7 +324,7 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUi() {
-    setWindowTitle("QTest - Industrial Surface Defect Detection");
+    setWindowTitle(tr("QTest - Industrial Surface Defect Detection"));
     resize(1200, 800);
 
     setupToolBar();
@@ -333,41 +334,41 @@ void MainWindow::setupUi() {
 }
 
 void MainWindow::setupToolBar() {
-    toolbar_ = addToolBar("Main");
+    toolbar_ = addToolBar(tr("Main"));
 
-    QAction* folderAction = toolbar_->addAction("Select Folder");
+    QAction* folderAction = toolbar_->addAction(tr("Select Folder"));
     connect(folderAction, &QAction::triggered, this, &MainWindow::onSelectFolder);
 
-    startAction_ = toolbar_->addAction("Start");
+    startAction_ = toolbar_->addAction(tr("Start"));
     startAction_->setEnabled(false);
     connect(startAction_, &QAction::triggered, this, &MainWindow::onStart);
 
-    stopAction_ = toolbar_->addAction("Stop");
+    stopAction_ = toolbar_->addAction(tr("Stop"));
     stopAction_->setEnabled(false);
     connect(stopAction_, &QAction::triggered, this, &MainWindow::onStop);
 
     toolbar_->addSeparator();
-    folderLabel_ = new QLabel("No folder selected");
+    folderLabel_ = new QLabel(tr("No folder selected"));
     toolbar_->addWidget(folderLabel_);
 }
 
 void MainWindow::setupFilterPanel() {
-    filterDock_ = new QDockWidget("Filters", this);
+    filterDock_ = new QDockWidget(tr("Filters"), this);
     filterDock_->setFeatures(QDockWidget::DockWidgetMovable |
                              QDockWidget::DockWidgetFloatable);
 
     QWidget* container = new QWidget;
     QVBoxLayout* layout = new QVBoxLayout(container);
 
-    QGroupBox* statusGroup = new QGroupBox("Status");
+    QGroupBox* statusGroup = new QGroupBox(tr("Status"));
     QVBoxLayout* statusLayout = new QVBoxLayout;
-    chkDefective_ = new QCheckBox("Defect");
+    chkDefective_ = new QCheckBox(tr("Defect"));
     chkDefective_->setChecked(true);
-    chkQcReject_  = new QCheckBox("QC Reject");
+    chkQcReject_  = new QCheckBox(tr("QC Reject"));
     chkQcReject_->setChecked(true);
-    chkPassed_    = new QCheckBox("Pass");
+    chkPassed_    = new QCheckBox(tr("Pass"));
     chkPassed_->setChecked(true);
-    chkFailed_    = new QCheckBox("Failed");
+    chkFailed_    = new QCheckBox(tr("Failed"));
     chkFailed_->setChecked(true);
     statusLayout->addWidget(chkDefective_);
     statusLayout->addWidget(chkQcReject_);
@@ -376,7 +377,7 @@ void MainWindow::setupFilterPanel() {
     statusGroup->setLayout(statusLayout);
     layout->addWidget(statusGroup);
 
-    QGroupBox* confGroup = new QGroupBox("Min Confidence");
+    QGroupBox* confGroup = new QGroupBox(tr("Min Confidence"));
     QVBoxLayout* confLayout = new QVBoxLayout;
     confSlider_ = new QSlider(Qt::Horizontal);
     confSlider_->setRange(0, 100);
@@ -385,10 +386,10 @@ void MainWindow::setupFilterPanel() {
     confGroup->setLayout(confLayout);
     layout->addWidget(confGroup);
 
-    QGroupBox* searchGroup = new QGroupBox("Search");
+    QGroupBox* searchGroup = new QGroupBox(tr("Search"));
     QVBoxLayout* searchLayout = new QVBoxLayout;
     nameEdit_ = new QLineEdit;
-    nameEdit_->setPlaceholderText("File name...");
+    nameEdit_->setPlaceholderText(tr("File name..."));
     searchLayout->addWidget(nameEdit_);
     searchGroup->setLayout(searchLayout);
     layout->addWidget(searchGroup);
@@ -427,14 +428,45 @@ void MainWindow::setupCentralArea() {
 
     QWidget* previewContainer = new QWidget;
     QVBoxLayout* previewLayout = new QVBoxLayout(previewContainer);
-    previewLayout->setContentsMargins(0, 0, 0, 0);
+    previewLayout->setContentsMargins(4, 4, 4, 4);
 
-    previewView_ = new QGraphicsView;
-    previewScene_ = new QGraphicsScene(this);
-    previewView_->setScene(previewScene_);
-    previewView_->setDragMode(QGraphicsView::ScrollHandDrag);
-    previewView_->setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
-    previewLayout->addWidget(previewView_);
+    QHBoxLayout* navLayout = new QHBoxLayout;
+    prevDefectBtn_ = new QPushButton(tr("<"));
+    prevDefectBtn_->setFixedWidth(30);
+    prevDefectBtn_->setEnabled(false);
+    nextDefectBtn_ = new QPushButton(tr(">"));
+    nextDefectBtn_->setFixedWidth(30);
+    nextDefectBtn_->setEnabled(false);
+    defectNavLabel_ = new QLabel(tr("No defects"));
+    defectNavLabel_->setAlignment(Qt::AlignCenter);
+    defectNavLabel_->setStyleSheet("color: #ccc; font-weight: bold;");
+    navLayout->addWidget(prevDefectBtn_);
+    navLayout->addWidget(defectNavLabel_, 1);
+    navLayout->addWidget(nextDefectBtn_);
+    previewLayout->addLayout(navLayout);
+
+    connect(prevDefectBtn_, &QPushButton::clicked, this, &MainWindow::onPrevDefect);
+    connect(nextDefectBtn_, &QPushButton::clicked, this, &MainWindow::onNextDefect);
+
+    defectZoomView_ = new QGraphicsView;
+    defectZoomScene_ = new QGraphicsScene(this);
+    defectZoomView_->setScene(defectZoomScene_);
+    defectZoomView_->setDragMode(QGraphicsView::ScrollHandDrag);
+    defectZoomView_->setStyleSheet("QGraphicsView { border: 1px solid #555; background: #1e1e1e; }");
+    previewLayout->addWidget(defectZoomView_, 1);
+
+    QLabel* overviewLabel = new QLabel(tr("Full image overview:"));
+    overviewLabel->setStyleSheet("color: #888; font-size: 10px; margin-top: 4px;");
+    previewLayout->addWidget(overviewLabel);
+
+    overviewView_ = new QGraphicsView;
+    overviewScene_ = new QGraphicsScene(this);
+    overviewView_->setScene(overviewScene_);
+    overviewView_->setFixedHeight(170);
+    overviewView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    overviewView_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    overviewView_->setStyleSheet("QGraphicsView { border: 1px solid #555; background: #1e1e1e; }");
+    previewLayout->addWidget(overviewView_);
 
     splitter->addWidget(gridView_);
     splitter->addWidget(previewContainer);
@@ -453,14 +485,14 @@ void MainWindow::setupStatusBar() {
     progressBar_->setValue(0);
     progressBar_->setVisible(false);
 
-    statusTotal_    = new QLabel("Total: 0");
-    statusDefect_   = new QLabel("Defect: 0");
-    statusPassed_   = new QLabel("Pass: 0");
-    statusQcRej_    = new QLabel("QC Rej: 0");
-    statusFailed_   = new QLabel("Failed: 0");
-    statusMissRate_ = new QLabel("Miss: --");
-    statusOverRate_ = new QLabel("Over: --");
-    statusTime_     = new QLabel("Time: --");
+    statusTotal_    = new QLabel(tr("Total: 0"));
+    statusDefect_   = new QLabel(tr("Defect: 0"));
+    statusPassed_   = new QLabel(tr("Pass: 0"));
+    statusQcRej_    = new QLabel(tr("QC Rej: 0"));
+    statusFailed_   = new QLabel(tr("Failed: 0"));
+    statusMissRate_ = new QLabel(tr("Miss: --"));
+    statusOverRate_ = new QLabel(tr("Over: --"));
+    statusTime_     = new QLabel(tr("Time: --"));
 
     statusBar()->addWidget(progressBar_);
     statusBar()->addWidget(statusTotal_);
@@ -474,7 +506,7 @@ void MainWindow::setupStatusBar() {
 }
 
 void MainWindow::onSelectFolder() {
-    QString folder = QFileDialog::getExistingDirectory(this, "Select Image Folder");
+    QString folder = QFileDialog::getExistingDirectory(this, tr("Select Image Folder"));
     if (folder.isEmpty()) return;
 
     selectedFolder_ = folder;
@@ -533,8 +565,7 @@ void MainWindow::onImageDone(int done, int total,
     progressBar_->setMaximum(total);
     progressBar_->setValue(done);
 
-    QString status = "Total: " + QString::number(done) + "/" + QString::number(total);
-    statusTotal_->setText(status);
+    statusTotal_->setText(tr("Total: %1/%2").arg(done).arg(total));
 }
 
 void MainWindow::onErrorOccurred(const model::ImageEntry& img, model::ErrorCode ec) {
@@ -566,43 +597,58 @@ void MainWindow::onFilterChanged() {
 }
 
 void MainWindow::updateStatusBar(const model::RunReport& report) {
-    statusTotal_->setText("Total: " + QString::number(report.totalImages));
-    statusDefect_->setText("Defect: " + QString::number(report.defective));
-    statusPassed_->setText("Pass: " + QString::number(report.passed));
-    statusQcRej_->setText("QC Rej: " + QString::number(report.qcRejected));
-    statusFailed_->setText("Failed: " + QString::number(report.failedCount));
+    statusTotal_->setText(tr("Total: %1").arg(report.totalImages));
+    statusDefect_->setText(tr("Defect: %1").arg(report.defective));
+    statusPassed_->setText(tr("Pass: %1").arg(report.passed));
+    statusQcRej_->setText(tr("QC Rej: %1").arg(report.qcRejected));
+    statusFailed_->setText(tr("Failed: %1").arg(report.failedCount));
 
     if (report.missRate.has_value())
-        statusMissRate_->setText("Miss: " + QString::number(*report.missRate * 100, 'f', 1) + "%");
+        statusMissRate_->setText(tr("Miss: %1%").arg(QString::number(*report.missRate * 100, 'f', 1)));
     else
-        statusMissRate_->setText("Miss: --");
+        statusMissRate_->setText(tr("Miss: --"));
 
     if (report.overkillRate.has_value())
-        statusOverRate_->setText("Over: " + QString::number(*report.overkillRate * 100, 'f', 1) + "%");
+        statusOverRate_->setText(tr("Over: %1%").arg(QString::number(*report.overkillRate * 100, 'f', 1)));
     else
-        statusOverRate_->setText("Over: --");
+        statusOverRate_->setText(tr("Over: --"));
 
     int secs = static_cast<int>(report.totalElapsedMs / 1000);
     int mins = secs / 60;
     secs = secs % 60;
-    statusTime_->setText(QString("Time: %1m%2s").arg(mins).arg(secs, 2, 10, QChar('0')));
+    statusTime_->setText(tr("Time: %1m%2s").arg(mins).arg(secs, 2, 10, QChar('0')));
 }
 
 void MainWindow::showPreview(const ResultItem& item) {
-    previewScene_->clear();
+    previewImagePath_ = QString::fromStdString(item.entry.filePath);
+    previewDefects_   = item.result.defects;
+    previewDefectIdx_ = 0;
 
-    cv::Mat mat = cv::imread(item.entry.filePath, cv::IMREAD_COLOR);
-    if (mat.empty()) return;
+    if (previewDefects_.empty()) {
+        defectNavLabel_->setText(tr("No defects"));
+        prevDefectBtn_->setEnabled(false);
+        nextDefectBtn_->setEnabled(false);
 
-    application::ResultMarker marker;
-    cv::Mat marked = marker.drawDefectOverlay(mat, item.result);
+        defectZoomScene_->clear();
+        overviewScene_->clear();
 
-    QImage qimg = RunBridge::toDisplayImage(item.entry, marked, &item.result);
-    QPixmap pm = QPixmap::fromImage(qimg);
+        cv::Mat mat = cv::imread(item.entry.filePath, cv::IMREAD_COLOR);
+        if (mat.empty()) return;
 
-    previewScene_->addPixmap(pm);
-    previewScene_->setSceneRect(pm.rect());
-    previewView_->fitInView(previewScene_->sceneRect(), Qt::KeepAspectRatio);
+        QImage qimg = RunBridge::toDisplayImage(item.entry, mat);
+        QPixmap pm = QPixmap::fromImage(qimg);
+        defectZoomScene_->addPixmap(pm);
+        defectZoomScene_->setSceneRect(pm.rect());
+        defectZoomView_->fitInView(defectZoomScene_->sceneRect(), Qt::KeepAspectRatio);
+
+        QPixmap ovPm = pm.scaled(150, 150, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        overviewScene_->addPixmap(ovPm);
+        overviewScene_->setSceneRect(ovPm.rect());
+        overviewView_->fitInView(overviewScene_->sceneRect(), Qt::KeepAspectRatio);
+        return;
+    }
+
+    updateDefectDisplay();
 }
 
 void MainWindow::setUiEnabled(bool enabled) {
@@ -610,6 +656,103 @@ void MainWindow::setUiEnabled(bool enabled) {
     stopAction_->setEnabled(!enabled);
     folderLabel_->setEnabled(enabled);
     progressBar_->setVisible(!enabled);
+}
+
+void MainWindow::updateDefectDisplay() {
+    defectZoomScene_->clear();
+    overviewScene_->clear();
+
+    cv::Mat mat = cv::imread(previewImagePath_.toStdString(), cv::IMREAD_COLOR);
+    if (mat.empty()) return;
+
+    int n = static_cast<int>(previewDefects_.size());
+    int idx = previewDefectIdx_;
+
+    defectNavLabel_->setText(tr("Defect %1 / %2").arg(idx + 1).arg(n));
+    prevDefectBtn_->setEnabled(idx > 0);
+    nextDefectBtn_->setEnabled(idx < n - 1);
+
+    const auto& def = previewDefects_[idx];
+
+    int pad = std::max(15, std::max(def.roi.width, def.roi.height) / 2);
+    int cx = def.roi.x + def.roi.width  / 2;
+    int cy = def.roi.y + def.roi.height / 2;
+    int x1 = std::max(0, cx - def.roi.width  / 2 - pad);
+    int y1 = std::max(0, cy - def.roi.height / 2 - pad);
+    int x2 = std::min(mat.cols, cx + def.roi.width  / 2 + pad);
+    int y2 = std::min(mat.rows, cy + def.roi.height / 2 + pad);
+
+    cv::Rect cropRect(x1, y1, x2 - x1, y2 - y1);
+    if (cropRect.width < 4 || cropRect.height < 4) {
+        cropRect = cv::Rect(0, 0, mat.cols, mat.rows);
+    }
+
+    cv::Mat crop = mat(cropRect).clone();
+
+    int shiftX = def.roi.x - x1;
+    int shiftY = def.roi.y - y1;
+    cv::Rect shiftedRoi(shiftX, shiftY, def.roi.width, def.roi.height);
+    cv::rectangle(crop, shiftedRoi, cv::Scalar(0, 0, 255), 2);
+
+    std::string label = std::string(model::defectTypeName(def.type))
+                      + "  " + std::to_string(static_cast<int>(def.confidence * 100)) + "%";
+    int baseline = 0;
+    cv::Size ts = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.6, 2, &baseline);
+    cv::rectangle(crop,
+                  cv::Point(shiftedRoi.x, shiftedRoi.y - ts.height - 6),
+                  cv::Point(shiftedRoi.x + ts.width + 4, shiftedRoi.y),
+                  cv::Scalar(0, 0, 255), cv::FILLED);
+    cv::putText(crop, label,
+                cv::Point(shiftedRoi.x + 2, shiftedRoi.y - 4),
+                cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                cv::Scalar(255, 255, 255), 2);
+
+    cv::cvtColor(crop, crop, cv::COLOR_BGR2RGB);
+    QImage cropImg(crop.data, crop.cols, crop.rows,
+                   static_cast<int>(crop.step), QImage::Format_RGB888);
+    QPixmap cropPm = QPixmap::fromImage(cropImg.copy());
+    QPixmap scaledCrop = cropPm.scaled(400, 400, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    defectZoomScene_->addPixmap(scaledCrop);
+    defectZoomScene_->setSceneRect(scaledCrop.rect());
+    defectZoomView_->fitInView(defectZoomScene_->sceneRect(), Qt::KeepAspectRatio);
+
+    cv::Mat overview = mat.clone();
+    for (int i = 0; i < n; ++i) {
+        const auto& d = previewDefects_[i];
+        cv::Scalar color = (i == idx) ? cv::Scalar(0, 200, 255) : cv::Scalar(0, 255, 0);
+        int thick = (i == idx) ? 3 : 1;
+        cv::rectangle(overview,
+                      cv::Rect(d.roi.x, d.roi.y, d.roi.width, d.roi.height),
+                      color, thick);
+        std::string num = std::to_string(i + 1);
+        cv::putText(overview, num,
+                    cv::Point(d.roi.x + 2, d.roi.y + 14),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 2);
+    }
+
+    cv::cvtColor(overview, overview, cv::COLOR_BGR2RGB);
+    QImage ovImg(overview.data, overview.cols, overview.rows,
+                 static_cast<int>(overview.step), QImage::Format_RGB888);
+    QPixmap ovPm = QPixmap::fromImage(ovImg.copy());
+    overviewScene_->addPixmap(ovPm);
+    overviewScene_->setSceneRect(ovPm.rect());
+    overviewView_->fitInView(overviewScene_->sceneRect(), Qt::KeepAspectRatio);
+}
+
+void MainWindow::onPrevDefect() {
+    if (previewDefectIdx_ > 0) {
+        --previewDefectIdx_;
+        updateDefectDisplay();
+    }
+}
+
+void MainWindow::onNextDefect() {
+    int n = static_cast<int>(previewDefects_.size());
+    if (previewDefectIdx_ < n - 1) {
+        ++previewDefectIdx_;
+        updateDefectDisplay();
+    }
 }
 
 }
