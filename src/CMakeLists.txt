@@ -77,10 +77,10 @@ target_link_libraries(qtest_ui PUBLIC
 )
 
 # ---- Main Executable ----
-add_executable(qtest
+add_executable(DefectX
     main.cpp
 )
-target_link_libraries(qtest PRIVATE
+target_link_libraries(DefectX PRIVATE
     qtest_ui
     qtest_application
     qtest_algorithm
@@ -88,14 +88,14 @@ target_link_libraries(qtest PRIVATE
     Qt6::Widgets
 )
 
-qt6_add_translations(qtest
+qt6_add_translations(DefectX
     TS_FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/ui/lang/qtest_zh_CN.ts
     QM_FILES_OUTPUT_VARIABLE qm_files
 )
 
-add_custom_command(TARGET qtest POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:qtest>/lang"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${qm_files} "$<TARGET_FILE_DIR:qtest>/lang"
+add_custom_command(TARGET DefectX POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:DefectX>/lang"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${qm_files} "$<TARGET_FILE_DIR:DefectX>/lang"
     COMMENT "Copying .qm translation files to output/lang/"
 )
