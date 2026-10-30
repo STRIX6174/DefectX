@@ -30,7 +30,7 @@ void ReportGenerator::generateCsv(const model::RunReport& report, const std::str
         }
 
         std::string types;
-        for (const auto& def : ir.defects) {
+        for (const auto& def : ir.flatDefects()) {
             if (!types.empty()) types += ";";
             types += model::defectTypeName(def.type);
         }
@@ -39,7 +39,7 @@ void ReportGenerator::generateCsv(const model::RunReport& report, const std::str
         f << fname << ","
           << status << ","
           << types << ","
-          << ir.defects.size() << ","
+          << ir.flatDefects().size() << ","
           << std::fixed << std::setprecision(1) << ir.elapsedMs << "\n";
     }
 
@@ -58,6 +58,19 @@ void ReportGenerator::generateCsv(const model::RunReport& report, const std::str
     }
     f << "TotalElapsedMs," << std::fixed << std::setprecision(0) << report.totalElapsedMs << "\n";
     f << "Partial," << (report.isPartial ? "true" : "false") << "\n";
+
+    if (!report.perType.empty()) {
+        f << "\n# Per-Type Summary\n";
+        f << "Type,TP,FP,FN,MissRate,OverkillRate\n";
+        for (const auto& r : report.perType) {
+            f << model::defectTypeName(r.type) << ","
+              << r.tp << ","
+              << r.fp << ","
+              << r.fn << ","
+              << std::fixed << std::setprecision(4) << r.missRate << ","
+              << std::fixed << std::setprecision(4) << r.overkillRate << "\n";
+        }
+    }
 
     LogManager::instance().info("CSV report saved: " + outputPath);
 }
@@ -84,6 +97,22 @@ void ReportGenerator::generateJson(const model::RunReport& report, const std::st
     f << "  \"total_elapsed_ms\": " << std::fixed << std::setprecision(0) << report.totalElapsedMs << ",\n";
     f << "  \"partial\": " << (report.isPartial ? "true" : "false") << ",\n";
 
+    if (!report.perType.empty()) {
+        f << "  \"per_type\": [\n";
+        for (size_t i = 0; i < report.perType.size(); ++i) {
+            const auto& r = report.perType[i];
+            f << "    {\n";
+            f << "      \"type\": \"" << model::defectTypeName(r.type) << "\",\n";
+            f << "      \"tp\": " << r.tp << ",\n";
+            f << "      \"fp\": " << r.fp << ",\n";
+            f << "      \"fn\": " << r.fn << ",\n";
+            f << "      \"miss_rate\": " << std::fixed << std::setprecision(4) << r.missRate << ",\n";
+            f << "      \"overkill_rate\": " << std::fixed << std::setprecision(4) << r.overkillRate << "\n";
+            f << "    }" << (i < report.perType.size() - 1 ? "," : "") << "\n";
+        }
+        f << "  ],\n";
+    }
+
     f << "  \"details\": [\n";
     for (size_t i = 0; i < report.details.size(); ++i) {
         const auto& [img, ir] = report.details[i];
@@ -99,7 +128,7 @@ void ReportGenerator::generateJson(const model::RunReport& report, const std::st
         default:                            f << "UNKNOWN"; break;
         }
         f << "\",\n";
-        f << "  \"defect_count\": " << ir.defects.size() << ",\n";
+        f << "  \"defect_count\": " << ir.flatDefects().size() << ",\n";
         f << "  \"elapsed_ms\": " << std::fixed << std::setprecision(1) << ir.elapsedMs << "\n";
         f << "    }" << (i < report.details.size() - 1 ? "," : "") << "\n";
     }

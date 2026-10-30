@@ -5,6 +5,7 @@
 #include <chrono>
 #include <algorithm>
 #include <future>
+#include <cassert>
 
 namespace fs = std::filesystem;
 
@@ -15,6 +16,20 @@ PipelineRunner::PipelineRunner() {
     cancelToken_ = std::make_shared<CancelToken>();
 }
 
+PipelineRunner::~PipelineRunner() {
+    stopWorkers();
+}
+
+void PipelineRunner::stopWorkers() {
+    {
+        std::lock_guard<std::mutex> lk(workMutex_);
+        workersActive_ = false;
+    }
+    workCv_.notify_all();
+    for (auto& th : workers_) th.join();
+    workers_.clear();
+}
+
 void PipelineRunner::setProgressCallback(std::shared_ptr<RunProgressCallback> cb) {
     progressCb_ = std::move(cb);
 }
@@ -23,8 +38,24 @@ void PipelineRunner::setCancelToken(CancelTokenPtr token) {
     cancelToken_ = std::move(token);
 }
 
+void PipelineRunner::setQcEnabled(bool enabled) {
+    qcEnabled_.store(enabled, std::memory_order_release);
+}
+
+void PipelineRunner::setParallelEnabled(bool enabled) {
+    parallelEnabled_.store(enabled, std::memory_order_release);
+}
+
 void PipelineRunner::setConfig(const model::PipelineParams& params) {
+    if (running_) {
+        LogManager::instance().warn("Cannot change config while pipeline is running");
+        return;
+    }
+
     params_ = params;
+
+    qcEnabled_.store(params.qcEnabled, std::memory_order_release);
+    timeoutMs_ = params.timeoutPerImageMs > 0 ? params.timeoutPerImageMs : 5000;
 
     qcOp_ = algorithm::createQcOperator(params_);
     defectOps_.clear();
@@ -34,6 +65,52 @@ void PipelineRunner::setConfig(const model::PipelineParams& params) {
         defectOps_.push_back(algorithm::createDefectOperator(dt, dp));
     }
     decision_ = algorithm::createDecisionLogic();
+
+    assert(defectOps_.size() == model::AllDefectTypes.size());
+
+    stopWorkers();
+
+    workersActive_ = true;
+    size_t N = defectOps_.size();
+    for (size_t t = 0; t < N; ++t) {
+        workers_.emplace_back([this, N]() {
+            while (true) {
+                std::unique_lock<std::mutex> lk(workMutex_);
+                workCv_.wait(lk, [this]() {
+                    return currentWork_.img != nullptr || !workersActive_;
+                });
+                if (!workersActive_) return;
+
+                auto* img    = currentWork_.img;
+                auto* result = currentWork_.result;
+
+                lk.unlock();
+
+                while (true) {
+                    size_t i;
+                    {
+                        std::lock_guard<std::mutex> lk2(workMutex_);
+                        if (currentWork_.img == nullptr) break;
+                        i = opsDone_;
+                        if (i >= N) break;
+                        ++opsDone_;
+                    }
+                    try {
+                        auto defs = defectOps_[i]->detect(*img);
+                        result->perType[i].defects = std::move(defs);
+                        result->perType[i].status =
+                            decision_->decidePerType(result->perType[i].defects);
+                    } catch (const std::exception& e) {
+                        LogManager::instance().error(
+                            "Operator " + std::to_string(i) + " crashed: " + e.what());
+                        result->perType[i].status = model::ImageStatus::LoadFailed;
+                    }
+                }
+
+                doneCv_.notify_one();
+            }
+        });
+    }
 
     LogManager::instance().info("Pipeline configured with " +
         std::to_string(defectOps_.size()) + " defect operators");
@@ -87,20 +164,72 @@ model::ImageEntry PipelineRunner::buildImageEntry(
 model::InspectionResult PipelineRunner::processSingleImage(const cv::Mat& img) {
     model::InspectionResult result;
 
-    result.qcResult = qcOp_->evaluate(img);
-    if (!result.qcResult.passed) {
-        result.finalStatus = model::ImageStatus::Invalid_Qc;
-        return result;
-    }
-
-    for (auto& op : defectOps_) {
-        auto defs = op->detect(img);
-        for (auto& d : defs) {
-            result.defects.push_back(std::move(d));
+    if (qcEnabled_.load(std::memory_order_acquire)) {
+        if (!qcOp_) {
+            LogManager::instance().warn(
+                "QC is enabled but qcOp_ is null -- QC will be skipped. "
+                "Check config.json QC parameters.");
+        } else {
+            result.qcResult = qcOp_->evaluate(img);
+            result.qcExecuted = true;
+            if (!result.qcResult.passed) {
+                result.finalStatus = model::ImageStatus::Invalid_Qc;
+                return result;
+            }
         }
     }
 
-    result.finalStatus = decision_->decide(result.defects, result.qcResult);
+    result.perType.resize(model::AllDefectTypes.size());
+    for (size_t i = 0; i < model::AllDefectTypes.size(); ++i) {
+        result.perType[i].type = model::AllDefectTypes[i];
+    }
+
+    assert(defectOps_.size() == result.perType.size());
+    for (size_t i = 0; i < defectOps_.size(); ++i) {
+        assert(defectOps_[i]->type() == result.perType[i].type);
+    }
+
+    if (parallelEnabled_.load(std::memory_order_acquire) && workersActive_.load(std::memory_order_acquire)) {
+        {
+            std::lock_guard<std::mutex> lk(workMutex_);
+            currentWork_ = {&img, &result};
+            opsDone_ = 0;
+        }
+        workCv_.notify_all();
+
+        {
+            std::unique_lock<std::mutex> lk(workMutex_);
+            bool finished = doneCv_.wait_for(lk, std::chrono::milliseconds(timeoutMs_),
+                [this]() { return opsDone_ >= defectOps_.size(); });
+            if (!finished) {
+                for (size_t i = 0; i < defectOps_.size(); ++i) {
+                    if (result.perType[i].status == model::ImageStatus::Pending) {
+                        result.perType[i].status = model::ImageStatus::LoadFailed;
+                    }
+                }
+                LogManager::instance().error("Parallel detection timed out after " +
+                    std::to_string(timeoutMs_) + "ms");
+            }
+            currentWork_.img = nullptr;
+        }
+    } else {
+        for (size_t i = 0; i < defectOps_.size(); ++i) {
+            auto defs = defectOps_[i]->detect(img);
+            result.perType[i].defects = std::move(defs);
+            result.perType[i].status =
+                decision_->decidePerType(result.perType[i].defects);
+        }
+    }
+
+    bool anyDefective = false;
+    for (auto& pt : result.perType) {
+        if (pt.status == model::ImageStatus::Defective) {
+            anyDefective = true;
+            break;
+        }
+    }
+    result.finalStatus = anyDefective ? model::ImageStatus::Defective
+                                      : model::ImageStatus::Pass;
     return result;
 }
 
@@ -113,6 +242,7 @@ void PipelineRunner::run() {
         return;
     }
 
+    running_ = true;
     auto startTime = std::chrono::steady_clock::now();
     cancelToken_->reset();
 
@@ -122,6 +252,7 @@ void PipelineRunner::run() {
         if (progressCb_) {
             progressCb_->onFinished(model::RunReport{});
         }
+        running_ = false;
         return;
     }
 
@@ -140,8 +271,6 @@ void PipelineRunner::run() {
     if (!outputDir_.empty()) {
         fs::create_directories(outputDir_);
     }
-
-    int timeoutMs = params_.timeoutPerImageMs > 0 ? params_.timeoutPerImageMs : 5000;
 
     ResultAggregator aggregator(gtLookup, hasGt);
     int total = static_cast<int>(files.size());
@@ -162,9 +291,9 @@ void PipelineRunner::run() {
             ir.finalStatus  = model::ImageStatus::LoadFailed;
         } else {
             auto future = std::async(std::launch::async,
-                [this, &img]() { return processSingleImage(img); });
+                [this, img]() { return processSingleImage(img); });
 
-            auto status = future.wait_for(std::chrono::milliseconds(timeoutMs));
+            auto status = future.wait_for(std::chrono::milliseconds(timeoutMs_));
             if (status == std::future_status::ready) {
                 ir = future.get();
             } else {
@@ -219,6 +348,8 @@ void PipelineRunner::run() {
         " Defective: " + std::to_string(lastReport_.defective) +
         " Time: " + std::to_string(static_cast<int>(totalMs)) + "ms" +
         (partial ? " [PARTIAL]" : ""));
+
+    running_ = false;
 }
 
 }

@@ -16,6 +16,7 @@
 #include <QThread>
 #include <QApplication>
 #include <QFrame>
+#include <QWidgetAction>
 
 #include <filesystem>
 #include <opencv2/imgcodecs.hpp>
@@ -50,7 +51,7 @@ QVariant ResultListModel::data(const QModelIndex& index, int role) const {
     }
     case Qt::UserRole: {
         QString types;
-        for (auto& d : item.result.defects) {
+        for (auto& d : item.result.flatDefects()) {
             if (!types.isEmpty()) types += ",";
             types += model::defectTypeAbbr(d.type);
         }
@@ -59,10 +60,10 @@ QVariant ResultListModel::data(const QModelIndex& index, int role) const {
     case Qt::UserRole + 1:
         return static_cast<int>(item.entry.status);
     case Qt::UserRole + 2:
-        return static_cast<int>(item.result.defects.size());
+        return static_cast<int>(item.result.flatDefects().size());
     case Qt::UserRole + 3: {
         double maxConf = 0.0;
-        for (auto& d : item.result.defects)
+        for (auto& d : item.result.flatDefects())
             maxConf = std::max(maxConf, d.confidence);
         return maxConf;
     }
@@ -183,7 +184,7 @@ bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
 
     if (minConfidence_ > 0.0 && status == model::ImageStatus::Defective) {
         double maxConf = 0.0;
-        for (auto& d : item->result.defects)
+        for (auto& d : item->result.flatDefects())
             maxConf = std::max(maxConf, d.confidence);
         if (maxConf < minConfidence_) return false;
     }
@@ -307,6 +308,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     setupUi();
 
+    chkQcEnabled_->setChecked(params.qcEnabled);
+    chkParallelEnabled_->setChecked(false);
+
     connect(bridge_.get(), &RunBridge::imageDone,
             this, &MainWindow::onImageDone, Qt::QueuedConnection);
     connect(bridge_.get(), &RunBridge::errorOccurred,
@@ -346,6 +350,28 @@ void MainWindow::setupToolBar() {
     stopAction_ = toolbar_->addAction(tr("Stop"));
     stopAction_->setEnabled(false);
     connect(stopAction_, &QAction::triggered, this, &MainWindow::onStop);
+
+    toolbar_->addSeparator();
+
+    chkQcEnabled_ = new QCheckBox(tr("QC Check"));
+    chkQcEnabled_->setChecked(true);
+    chkQcEnabled_->setToolTip(
+        tr("Check: run blur/overexposure/underexposure pre-check\n"
+           "Uncheck: skip QC, all images go directly to defect detection"));
+
+    QWidgetAction* qcAction = new QWidgetAction(this);
+    qcAction->setDefaultWidget(chkQcEnabled_);
+    toolbar_->addAction(qcAction);
+
+    chkParallelEnabled_ = new QCheckBox(tr("Parallel"));
+    chkParallelEnabled_->setChecked(false);
+    chkParallelEnabled_->setToolTip(
+        tr("Check: run 6 defect detectors in separate threads (faster but uses more memory)\n"
+           "Uncheck: run detectors one by one (slower but safe, good for debugging)"));
+
+    QWidgetAction* parallelAction = new QWidgetAction(this);
+    parallelAction->setDefaultWidget(chkParallelEnabled_);
+    toolbar_->addAction(parallelAction);
 
     toolbar_->addSeparator();
     folderLabel_ = new QLabel(tr("No folder selected"));
@@ -526,6 +552,8 @@ void MainWindow::onStart() {
     progressBar_->setVisible(true);
     progressBar_->setValue(0);
 
+    pipeline_->setQcEnabled(chkQcEnabled_->isChecked());
+    pipeline_->setParallelEnabled(chkParallelEnabled_->isChecked());
     pipeline_->setCancelToken(std::make_shared<application::CancelToken>());
 
     disconnect(bridge_.get(), nullptr, this, nullptr);
@@ -621,7 +649,7 @@ void MainWindow::updateStatusBar(const model::RunReport& report) {
 
 void MainWindow::showPreview(const ResultItem& item) {
     previewImagePath_ = QString::fromStdString(item.entry.filePath);
-    previewDefects_   = item.result.defects;
+    previewDefects_   = item.result.flatDefects();
     previewDefectIdx_ = 0;
 
     if (previewDefects_.empty()) {
@@ -656,6 +684,9 @@ void MainWindow::setUiEnabled(bool enabled) {
     stopAction_->setEnabled(!enabled);
     folderLabel_->setEnabled(enabled);
     progressBar_->setVisible(!enabled);
+
+    chkQcEnabled_->setEnabled(enabled);
+    if (chkParallelEnabled_) chkParallelEnabled_->setEnabled(enabled);
 }
 
 void MainWindow::updateDefectDisplay() {

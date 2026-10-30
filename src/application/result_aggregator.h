@@ -34,6 +34,8 @@ private:
     int fp_ = 0;
     int fn_ = 0;
 
+    std::map<model::DefectType, model::PerTypeMetrics> perTypeMetrics_;
+
     std::vector<model::ErrorDetail> errors_;
     std::vector<std::pair<model::ImageEntry, model::InspectionResult>> details_;
 };

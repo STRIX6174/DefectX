@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/defect_record.h"
+#include "model/defect_type.h"
 
 #include <opencv2/core.hpp>
 #include <vector>
@@ -12,6 +13,7 @@ class DefectOperator {
 public:
     virtual ~DefectOperator() = default;
     virtual std::vector<model::DefectRecord> detect(const cv::Mat& img) = 0;
+    virtual model::DefectType type() const = 0;
 };
 
 }

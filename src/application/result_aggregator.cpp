@@ -51,6 +51,20 @@ void ResultAggregator::addResult(
         if (gtDefective && detectedDefective)       ++tp_;
         else if (!gtDefective && detectedDefective) ++fp_;
         else if (gtDefective && !detectedDefective) ++fn_;
+
+        for (const auto& pt : ir.perType) {
+            bool gtHasThisType = false;
+            if (it != gtLookup_.end()) {
+                const auto& gtTypes = it->second.defectTypes;
+                gtHasThisType = std::find(gtTypes.begin(), gtTypes.end(), pt.type) != gtTypes.end();
+            }
+            bool detectedThisType = (pt.status == model::ImageStatus::Defective);
+
+            auto& m = perTypeMetrics_[pt.type];
+            if (gtHasThisType && detectedThisType)       ++m.tp;
+            else if (!gtHasThisType && detectedThisType) ++m.fp;
+            else if (gtHasThisType && !detectedThisType) ++m.fn;
+        }
     }
 
     details_.push_back({img, ir});
@@ -73,6 +87,17 @@ model::RunReport ResultAggregator::finalize(bool isPartial, double totalElapsedM
     }
     if (hasGroundTruth_ && (tp_ + fp_) > 0) {
         report.overkillRate = static_cast<double>(fp_) / (tp_ + fp_);
+    }
+
+    for (const auto& [type, m] : perTypeMetrics_) {
+        model::PerTypeReport r;
+        r.type = type;
+        r.tp = m.tp; r.fp = m.fp; r.fn = m.fn;
+        int totalPositive = m.tp + m.fn;
+        int totalAlarms   = m.tp + m.fp;
+        r.missRate    = (totalPositive > 0) ? static_cast<double>(m.fn) / totalPositive : 0.0;
+        r.overkillRate = (totalAlarms > 0)   ? static_cast<double>(m.fp) / totalAlarms   : 0.0;
+        report.perType.push_back(r);
     }
 
     return report;

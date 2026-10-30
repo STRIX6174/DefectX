@@ -21,6 +21,12 @@ public:
 
         return model::ImageStatus::Pass;
     }
+
+    model::ImageStatus decidePerType(
+        const std::vector<model::DefectRecord>& defects) const override {
+        return defects.empty() ? model::ImageStatus::Pass
+                               : model::ImageStatus::Defective;
+    }
 };
 
 std::unique_ptr<DecisionLogic> createDecisionLogic() {

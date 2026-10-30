@@ -27,6 +27,8 @@ struct DefectParam {
 struct PipelineParams {
     int    version = 1;
 
+    bool   qcEnabled = true;
+
     double laplacianThreshold  = 100.0;
     int    overexposureHigh    = 245;
     int    underexposureLow    = 10;

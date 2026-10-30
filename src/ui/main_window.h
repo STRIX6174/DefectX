@@ -136,6 +136,8 @@ private:
     QCheckBox*   chkQcReject_  = nullptr;
     QCheckBox*   chkPassed_    = nullptr;
     QCheckBox*   chkFailed_    = nullptr;
+    QCheckBox*   chkQcEnabled_ = nullptr;
+    QCheckBox*   chkParallelEnabled_ = nullptr;
     QSlider*     confSlider_   = nullptr;
     QLineEdit*   nameEdit_     = nullptr;
 

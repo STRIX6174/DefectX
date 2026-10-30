@@ -95,6 +95,12 @@ std::optional<model::PipelineParams> ConfigManager::loadFromFile(const std::stri
         auto json = readFile(configPath);
         auto params = defaults();
 
+        auto qcEnabledPos = json.find("\"enabled\"");
+        if (qcEnabledPos != std::string::npos) {
+            auto val = extractDouble(json, "enabled", 1.0);
+            params.qcEnabled = (val > 0.5);
+        }
+
         params.laplacianThreshold = extractDouble(json, "laplacian_threshold", params.laplacianThreshold);
         params.overexposureHigh   = extractInt(json, "overexposure_high", params.overexposureHigh);
         params.underexposureLow   = extractInt(json, "underexposure_low", params.underexposureLow);

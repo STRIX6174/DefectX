@@ -16,6 +16,10 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 namespace qf {
 namespace application {
@@ -23,6 +27,7 @@ namespace application {
 class PipelineRunner {
 public:
     PipelineRunner();
+    ~PipelineRunner();
 
     void setProgressCallback(std::shared_ptr<RunProgressCallback> cb);
     void setCancelToken(CancelTokenPtr token);
@@ -33,6 +38,9 @@ public:
     void setOutputDir(const std::string& outputDir);
     void setSaveMarkedImages(bool save);
 
+    void setQcEnabled(bool enabled);
+    void setParallelEnabled(bool enabled);
+
     void run();
 
     CancelTokenPtr cancelToken() const { return cancelToken_; }
@@ -40,6 +48,13 @@ public:
     const model::RunReport& lastReport() const { return lastReport_; }
 
 private:
+    struct WorkRequest {
+        const cv::Mat*              img = nullptr;
+        model::InspectionResult*    result = nullptr;
+    };
+
+    void stopWorkers();
+
     std::vector<std::string> scanImageFiles(const std::string& folder);
 
     model::ImageEntry buildImageEntry(const std::string& filePath, const cv::Mat& img);
@@ -64,6 +79,19 @@ private:
     ReportGenerator reportGen_;
 
     model::RunReport lastReport_;
+
+    std::atomic<bool> qcEnabled_{true};
+    std::atomic<bool> parallelEnabled_{false};
+    std::atomic<bool> workersActive_{false};
+    bool running_ = false;
+    int  timeoutMs_ = 5000;
+
+    std::vector<std::thread> workers_;
+    std::mutex workMutex_;
+    std::condition_variable workCv_;
+    std::condition_variable doneCv_;
+    WorkRequest currentWork_{};
+    size_t opsDone_ = 0;
 };
 
 }

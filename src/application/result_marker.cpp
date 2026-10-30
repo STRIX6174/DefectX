@@ -28,7 +28,7 @@ cv::Mat ResultMarker::drawDefectOverlay(
 
     cv::Mat marked = original.clone();
 
-    for (const auto& def : result.defects) {
+    for (const auto& def : result.flatDefects()) {
         cv::Scalar color = colorForType(def.type);
         cv::Rect roi(def.roi.x, def.roi.y, def.roi.width, def.roi.height);
 

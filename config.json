@@ -1,6 +1,7 @@
 {
   "version": 1,
   "qc": {
+    "enabled": true,
     "laplacian_threshold": 100.0,
     "overexposure_high": 245,
     "underexposure_low": 10
