@@ -1,4 +1,6 @@
 #include "ui/main_window.h"
+#include "ui/p5_widgets.h"
+#include "ui/p5_theme.h"
 #include "application/config_manager.h"
 #include "application/log_manager.h"
 #include "model/defect_class.h"
@@ -7,11 +9,12 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
-#include <QScrollArea>
-#include <QGroupBox>
+#include <QStatusBar>
 #include <QPainter>
 #include <QFileInfo>
 #include <QThread>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 
 #include <filesystem>
 #include <algorithm>
@@ -120,16 +123,8 @@ const ResultItem* ResultListModel::itemAt(int row) const {
 ResultFilterProxy::ResultFilterProxy(QObject* parent)
     : QSortFilterProxyModel(parent) {}
 
-void ResultFilterProxy::setShowClassified(bool show) {
-    showClassified_ = show;
-    invalidateFilter();
-}
-void ResultFilterProxy::setShowUncertain(bool show) {
-    showUncertain_ = show;
-    invalidateFilter();
-}
-void ResultFilterProxy::setShowFailed(bool show) {
-    showFailed_ = show;
+void ResultFilterProxy::setSelectedClass(int classIndex) {
+    selectedClass_ = classIndex;
     invalidateFilter();
 }
 void ResultFilterProxy::setMinConfidence(double minConf) {
@@ -150,21 +145,19 @@ bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
     auto* item = model->itemAt(sourceRow);
     if (!item) return false;
 
-    auto status = item->entry.status;
+    bool loadFailed = (item->entry.status == model::ImageStatus::LoadFailed);
+    int predIdx = item->result.predicted.has_value()
+                      ? model::defectClassIndex(*item->result.predicted)
+                      : -1;
 
-    if (status == model::ImageStatus::LoadFailed) {
-        if (!showFailed_) return false;
-    } else {
-        bool hasPred = item->result.predicted.has_value();
-        if (hasPred) {
-            if (!showClassified_) return false;
-        } else {
-            if (!showUncertain_) return false;
-        }
+    // 六类图例单选："只看某类"（失败图无类别，选中类别时被过滤）
+    if (selectedClass_ >= 0 && predIdx != selectedClass_) {
+        return false;
+    }
 
-        if (minConfidence_ > 0.0 && item->result.confidence < minConfidence_) {
-            return false;
-        }
+    // 最低置信度（仅对已分类图像生效）
+    if (!loadFailed && minConfidence_ > 0.0 && item->result.confidence < minConfidence_) {
+        return false;
     }
 
     if (!nameFilter_.isEmpty()) {
@@ -176,7 +169,7 @@ bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
 }
 
 // ============================================================
-// ThumbnailDelegate
+// ThumbnailDelegate（P5 斜切卡片 + 类别色角标）
 // ============================================================
 ThumbnailDelegate::ThumbnailDelegate(QObject* parent)
     : QStyledItemDelegate(parent) {}
@@ -187,49 +180,62 @@ void ThumbnailDelegate::paint(QPainter* painter,
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing);
 
-    QRect rect = option.rect.adjusted(kGap, kGap, -kGap, -kGap);
+    QRectF card = QRectF(option.rect).adjusted(kGap, kGap, -kGap, -kGap);
 
-    if (option.state & QStyle::State_Selected) {
-        painter->fillRect(option.rect, QColor(51, 153, 255, 80));
-    }
+    int predIdx = index.data(RolePredIdx).toInt();
+    int status = index.data(RoleStatus).toInt();
+    bool failed = (static_cast<model::ImageStatus>(status) == model::ImageStatus::LoadFailed);
+    QColor accent = failed ? QColor(p5::kGray)
+                   : (predIdx >= 0 ? defectClassColor(predIdx) : QColor(p5::kGray));
+
+    bool hovered = option.state & QStyle::State_MouseOver;
+    bool selected = option.state & QStyle::State_Selected;
+
+    // 卡片底 + 描边（悬浮 = 类别色，选中 = P5 血红）
+    QPainterPath cardPath = chamferRect(card, 8.0);
+    painter->fillPath(cardPath, QColor(p5::kPanel));
+    QPen borderPen(selected ? QColor(p5::kRed)
+                   : hovered ? accent : QColor(p5::kBorder),
+                   selected ? 2 : 1);
+    painter->setPen(borderPen);
+    painter->setBrush(Qt::NoBrush);
+    painter->drawPath(cardPath);
+
+    // 缩略图区
+    QRectF imgArea = card.adjusted(5, 5, -5, -5);
+    imgArea.setBottom(card.bottom() - 18);
 
     QPixmap thumb = index.data(Qt::DecorationRole).value<QPixmap>();
     if (!thumb.isNull()) {
-        QPixmap scaled = thumb.scaled(rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-        int x = rect.x() + (rect.width() - scaled.width()) / 2;
-        int y = rect.y() + (rect.height() - scaled.height()) / 2;
+        QPixmap scaled = thumb.scaled(imgArea.size().toSize(),
+                                      Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        int x = static_cast<int>(imgArea.x() + (imgArea.width() - scaled.width()) / 2);
+        int y = static_cast<int>(imgArea.y() + (imgArea.height() - scaled.height()) / 2);
         painter->drawPixmap(x, y, scaled);
     } else {
-        painter->fillRect(rect, QColor(60, 60, 60));
-        painter->setPen(Qt::gray);
-        painter->drawText(rect, Qt::AlignCenter, tr("NO IMG"));
+        painter->fillRect(imgArea, QColor("#1E1E24"));
+        painter->setPen(QColor(p5::kGray));
+        painter->drawText(imgArea, Qt::AlignCenter, tr("NO IMG"));
     }
 
-    int status = index.data(RoleStatus).toInt();
-    int predIdx = index.data(RolePredIdx).toInt();
-    double conf = index.data(RoleConf).toDouble();
-
-    QColor badgeColor;
+    // 角标（斜切胶囊，底色 = 类别专属色）
     QString badgeText;
-    if (static_cast<model::ImageStatus>(status) == model::ImageStatus::LoadFailed) {
-        badgeColor = QColor(120, 120, 120);
-        badgeText  = tr("ERR");
+    if (failed) {
+        badgeText = tr("ERR");
     } else if (predIdx >= 0) {
-        badgeColor = QColor(220, 120, 30);
-        badgeText  = index.data(RolePredAbbr).toString() + " "
-                     + QString::number(static_cast<int>(conf * 100)) + "%";
+        double conf = index.data(RoleConf).toDouble();
+        badgeText = index.data(RolePredAbbr).toString() + " "
+                    + QString::number(static_cast<int>(conf * 100)) + "%";
     } else {
-        badgeColor = QColor(90, 90, 90);
-        badgeText  = tr("?");
+        badgeText = tr("?");
     }
 
     QFontMetrics fm(painter->font());
-    int badgeW = fm.horizontalAdvance(badgeText) + 12;
+    int badgeW = fm.horizontalAdvance(badgeText) + 16;
     int badgeH = 18;
-    QRect badgeRect(rect.right() - badgeW - 2, rect.bottom() - badgeH - 2, badgeW, badgeH);
-    painter->setBrush(badgeColor);
-    painter->setPen(Qt::NoPen);
-    painter->drawRoundedRect(badgeRect, 3, 3);
+    QRectF badgeRect(card.right() - badgeW - 3, card.top() + 3, badgeW, badgeH);
+    QPainterPath badgePath = chamferRect(badgeRect, 4.0);
+    painter->fillPath(badgePath, accent);
     painter->setPen(Qt::white);
     QFont f = painter->font();
     f.setPixelSize(9);
@@ -237,22 +243,22 @@ void ThumbnailDelegate::paint(QPainter* painter,
     painter->setFont(f);
     painter->drawText(badgeRect, Qt::AlignCenter, badgeText);
 
+    // 文件名（卡片底部，次要文字）
     QString fname = index.data(Qt::DisplayRole).toString();
-    if (fname.length() > 14) fname = fname.left(11) + "...";
-
-    QRect textRect(rect.x(), rect.bottom() + 2, rect.width(), 16);
-    painter->setPen(Qt::white);
+    if (fname.length() > 13) fname = fname.left(10) + "...";
+    QRectF textRect(card.left(), card.bottom() - 16, card.width(), 14);
+    painter->setPen(QColor(p5::kTextDim));
     f.setPixelSize(9);
     f.setBold(false);
     painter->setFont(f);
-    painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, fname);
+    painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignVCenter, fname);
 
     painter->restore();
 }
 
 QSize ThumbnailDelegate::sizeHint(const QStyleOptionViewItem&,
                                   const QModelIndex&) const {
-    return QSize(kThumbSize + kGap * 2, kThumbSize + 24);
+    return QSize(kThumbSize + kGap * 2 + 8, kThumbSize + kGap * 2 + 40);
 }
 
 // ============================================================
@@ -291,90 +297,136 @@ MainWindow::~MainWindow() {
 
 void MainWindow::setupUi() {
     setWindowTitle(tr("DefectX - Surface Defect Classification"));
-    resize(1200, 800);
+    resize(1360, 880);
+    setStyleSheet(p5StyleSheet());
 
-    setupToolBar();
-    setupFilterPanel();
-    setupCentralArea();
+    auto* root = new QWidget;
+    auto* rootLayout = new QVBoxLayout(root);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
+
+    rootLayout->addWidget(buildToolBar());
+    rootLayout->addWidget(buildCentral(), 1);
+
+    setCentralWidget(root);
     setupStatusBar();
 }
 
-void MainWindow::setupToolBar() {
-    toolbar_ = addToolBar(tr("Main"));
-    toolbar_->setMovable(false);
+QWidget* MainWindow::buildToolBar() {
+    auto* bar = new QWidget;
+    bar->setObjectName("topbar");
+    bar->setAttribute(Qt::WA_StyledBackground, true);
 
-    QAction* folderAction = toolbar_->addAction(tr("Select Folder"));
-    connect(folderAction, &QAction::triggered, this, &MainWindow::onSelectFolder);
+    auto* lay = new QHBoxLayout(bar);
+    lay->setContentsMargins(16, 10, 16, 10);
+    lay->setSpacing(10);
 
-    startAction_ = toolbar_->addAction(tr("Start"));
-    startAction_->setEnabled(false);
-    connect(startAction_, &QAction::triggered, this, &MainWindow::onStart);
+    brandLabel_ = new QLabel("DefectX");
+    brandLabel_->setStyleSheet("font-size:20px; font-weight:bold; color:#FFFFFF;");
+    lay->addWidget(brandLabel_);
 
-    stopAction_ = toolbar_->addAction(tr("Stop"));
-    stopAction_->setEnabled(false);
-    connect(stopAction_, &QAction::triggered, this, &MainWindow::onStop);
+    folderLabel_ = new QLabel(tr("未选择文件夹"));
+    folderLabel_->setStyleSheet("color:#B8B8C0;");
+    lay->addWidget(folderLabel_, 1);
 
-    toolbar_->addSeparator();
-    folderLabel_ = new QLabel(tr("No folder selected"));
-    toolbar_->addWidget(folderLabel_);
+    selectBtn_ = new ChamferButton(tr("选择文件夹"), false);
+    startBtn_  = new ChamferButton(tr("启动"), true);
+    stopBtn_   = new ChamferButton(tr("中止"), false);
+    startBtn_->setEnabled(false);
+    stopBtn_->setEnabled(false);
+
+    connect(selectBtn_, &ChamferButton::clicked, this, &MainWindow::onSelectFolder);
+    connect(startBtn_,  &ChamferButton::clicked, this, &MainWindow::onStart);
+    connect(stopBtn_,   &ChamferButton::clicked, this, &MainWindow::onStop);
+
+    lay->addWidget(selectBtn_);
+    lay->addWidget(startBtn_);
+    lay->addWidget(stopBtn_);
+
+    return bar;
 }
 
-void MainWindow::setupFilterPanel() {
-    filterDock_ = new QDockWidget(tr("Filters"), this);
-    filterDock_->setFeatures(QDockWidget::DockWidgetMovable |
-                             QDockWidget::DockWidgetFloatable);
+QWidget* MainWindow::buildFilterPanel() {
+    auto* panel = new QWidget;
+    panel->setObjectName("panel");
+    panel->setAttribute(Qt::WA_StyledBackground, true);
 
-    QWidget* container = new QWidget;
-    QVBoxLayout* layout = new QVBoxLayout(container);
+    auto* lay = new QVBoxLayout(panel);
+    lay->setContentsMargins(14, 14, 14, 14);
+    lay->setSpacing(10);
 
-    QGroupBox* statusGroup = new QGroupBox(tr("Result"));
-    QVBoxLayout* statusLayout = new QVBoxLayout;
-    chkClassified_ = new QCheckBox(tr("Classified (with label)"));
-    chkClassified_->setChecked(true);
-    chkUncertain_  = new QCheckBox(tr("Uncertain (low confidence)"));
-    chkUncertain_->setChecked(true);
-    chkFailed_     = new QCheckBox(tr("Failed"));
-    chkFailed_->setChecked(true);
-    statusLayout->addWidget(chkClassified_);
-    statusLayout->addWidget(chkUncertain_);
-    statusLayout->addWidget(chkFailed_);
-    statusGroup->setLayout(statusLayout);
-    layout->addWidget(statusGroup);
+    auto* title = new QLabel(tr("筛选 / 只看某类"));
+    title->setStyleSheet("color:#FFFFFF; font-weight:bold; font-size:14px;");
+    lay->addWidget(title);
 
-    QGroupBox* confGroup = new QGroupBox(tr("Min Confidence"));
-    QVBoxLayout* confLayout = new QVBoxLayout;
+    legend_ = new ClassLegend;
+    connect(legend_, &ClassLegend::selectionChanged, this, &MainWindow::onFilterChanged);
+    lay->addWidget(legend_);
+
+    auto* confTitle = new QLabel(tr("最低置信度"));
+    confTitle->setStyleSheet("color:#B8B8C0;");
+    lay->addWidget(confTitle);
+
     confSlider_ = new QSlider(Qt::Horizontal);
     confSlider_->setRange(0, 100);
     confSlider_->setValue(0);
-    confLayout->addWidget(confSlider_);
-    confGroup->setLayout(confLayout);
-    layout->addWidget(confGroup);
+    lay->addWidget(confSlider_);
 
-    QGroupBox* searchGroup = new QGroupBox(tr("Search"));
-    QVBoxLayout* searchLayout = new QVBoxLayout;
+    auto* searchTitle = new QLabel(tr("文件名搜索"));
+    searchTitle->setStyleSheet("color:#B8B8C0;");
+    lay->addWidget(searchTitle);
+
     nameEdit_ = new QLineEdit;
-    nameEdit_->setPlaceholderText(tr("File name..."));
-    searchLayout->addWidget(nameEdit_);
-    searchGroup->setLayout(searchLayout);
-    layout->addWidget(searchGroup);
+    nameEdit_->setPlaceholderText(tr("输入关键字…"));
+    lay->addWidget(nameEdit_);
 
-    layout->addStretch();
-    filterDock_->setWidget(container);
-    addDockWidget(Qt::LeftDockWidgetArea, filterDock_);
+    lay->addStretch();
+    return panel;
 }
 
-void MainWindow::setupCentralArea() {
-    QSplitter* splitter = new QSplitter(Qt::Horizontal);
+QWidget* MainWindow::buildDetailPanel() {
+    auto* panel = new QWidget;
+    panel->setObjectName("panel");
+    panel->setAttribute(Qt::WA_StyledBackground, true);
+
+    auto* lay = new QVBoxLayout(panel);
+    lay->setContentsMargins(14, 14, 14, 14);
+    lay->setSpacing(10);
+
+    predictionLabel_ = new QLabel(tr("未选择图片"));
+    predictionLabel_->setStyleSheet("color:#FFFFFF; font-weight:bold; font-size:14px;");
+    lay->addWidget(predictionLabel_);
+
+    imageView_ = new ImagePreview;
+    imageView_->setMinimumHeight(220);
+    lay->addWidget(imageView_, 1);
+
+    auto* scoreTitle = new QLabel(tr("六类置信度"));
+    scoreTitle->setStyleSheet("color:#FFFFFF; font-weight:bold; font-size:13px;");
+    lay->addWidget(scoreTitle);
+
+    for (size_t i = 0; i < model::AllDefectClasses.size(); ++i) {
+        auto* bar = new ScoreBar(model::AllDefectClasses[i]);
+        scoreBars_[i] = bar;
+        lay->addWidget(bar);
+    }
+
+    return panel;
+}
+
+QWidget* MainWindow::buildCentral() {
+    auto* splitter = new QSplitter(Qt::Horizontal);
 
     gridView_ = new QListView;
     gridView_->setViewMode(QListView::IconMode);
     gridView_->setIconSize(QSize(120, 120));
-    gridView_->setGridSize(QSize(140, 150));
+    gridView_->setGridSize(QSize(144, 176));
     gridView_->setResizeMode(QListView::Adjust);
     gridView_->setMovement(QListView::Static);
     gridView_->setSelectionMode(QAbstractItemView::SingleSelection);
     gridView_->setUniformItemSizes(true);
     gridView_->setItemDelegate(new ThumbnailDelegate(this));
+    gridView_->setFrameShape(QFrame::NoFrame);
 
     gridModel_ = new ResultListModel(this);
     gridFilter_ = new ResultFilterProxy(this);
@@ -382,80 +434,36 @@ void MainWindow::setupCentralArea() {
     gridView_->setModel(gridFilter_);
 
     connect(gridView_, &QListView::clicked, this, &MainWindow::onGridClicked);
-    connect(chkClassified_, &QCheckBox::toggled, this, &MainWindow::onFilterChanged);
-    connect(chkUncertain_,  &QCheckBox::toggled, this, &MainWindow::onFilterChanged);
-    connect(chkFailed_,     &QCheckBox::toggled, this, &MainWindow::onFilterChanged);
-    connect(confSlider_,    &QSlider::valueChanged, this, &MainWindow::onFilterChanged);
-    connect(nameEdit_,      &QLineEdit::textChanged, this, &MainWindow::onFilterChanged);
 
-    // 右侧详情面板
-    QWidget* detailContainer = new QWidget;
-    QVBoxLayout* detailLayout = new QVBoxLayout(detailContainer);
-    detailLayout->setContentsMargins(4, 4, 4, 4);
+    QWidget* filterPanel = buildFilterPanel();
+    QWidget* detailPanel = buildDetailPanel();
 
-    predictionLabel_ = new QLabel(tr("No image selected"));
-    predictionLabel_->setStyleSheet("font-weight: bold; font-size: 14px;");
-    detailLayout->addWidget(predictionLabel_);
+    connect(confSlider_, &QSlider::valueChanged, this, &MainWindow::onFilterChanged);
+    connect(nameEdit_,   &QLineEdit::textChanged,  this, &MainWindow::onFilterChanged);
 
-    imageView_ = new QGraphicsView;
-    imageScene_ = new QGraphicsScene(this);
-    imageView_->setScene(imageScene_);
-    imageView_->setDragMode(QGraphicsView::ScrollHandDrag);
-    imageView_->setStyleSheet("QGraphicsView { border: 1px solid #555; background: #1e1e1e; }");
-    detailLayout->addWidget(imageView_, 1);
-
-    // 六类置信度条
-    QGroupBox* scoreGroup = new QGroupBox(tr("Six-class confidence"));
-    QVBoxLayout* scoreLayout = new QVBoxLayout(scoreGroup);
-
-    for (size_t i = 0; i < model::AllDefectClasses.size(); ++i) {
-        auto dc = model::AllDefectClasses[i];
-
-        QHBoxLayout* rowLayout = new QHBoxLayout;
-        QLabel* nameLabel = new QLabel(
-            QString("%1 (%2)").arg(QString::fromUtf8(model::defectClassChinese(dc)),
-                                   QString::fromUtf8(model::defectClassAbbr(dc))));
-        nameLabel->setFixedWidth(140);
-        nameLabel->setStyleSheet("color: #ddd;");
-
-        QProgressBar* bar = new QProgressBar;
-        bar->setRange(0, 100);
-        bar->setValue(0);
-        bar->setFormat("%p%");
-        bar->setTextVisible(true);
-        bar->setMaximumHeight(18);
-
-        rowLayout->addWidget(nameLabel);
-        rowLayout->addWidget(bar, 1);
-
-        scoreNameLabels_[i] = nameLabel;
-        scoreBars_[i] = bar;
-        scoreLayout->addLayout(rowLayout);
-    }
-    detailLayout->addWidget(scoreGroup);
-
+    splitter->addWidget(filterPanel);
     splitter->addWidget(gridView_);
-    splitter->addWidget(detailContainer);
-    splitter->setStretchFactor(0, 3);
-    splitter->setStretchFactor(1, 2);
+    splitter->addWidget(detailPanel);
+    splitter->setStretchFactor(0, 0);
+    splitter->setStretchFactor(1, 3);
+    splitter->setStretchFactor(2, 2);
+    splitter->setSizes({210, 560, 360});
 
-    setCentralWidget(splitter);
+    return splitter;
 }
 
 void MainWindow::setupStatusBar() {
-    statusBar()->setStyleSheet("QStatusBar { background: #2b2b2b; color: #ddd; }");
-
     progressBar_ = new QProgressBar;
     progressBar_->setMaximumWidth(200);
     progressBar_->setMaximum(100);
     progressBar_->setValue(0);
     progressBar_->setVisible(false);
 
-    statusTotal_   = new QLabel(tr("Total: 0"));
-    statusSuccess_ = new QLabel(tr("Success: 0"));
-    statusFailed_  = new QLabel(tr("Failed: 0"));
-    statusAvg_     = new QLabel(tr("Avg: -- ms"));
-    statusP95_     = new QLabel(tr("P95: -- ms"));
+    statusTotal_   = new QLabel(tr("总图 0"));
+    statusSuccess_ = new QLabel(tr("成功 0"));
+    statusFailed_  = new QLabel(tr("失败 0"));
+    statusAvg_     = new QLabel(tr("平均 -- ms"));
+    statusP95_     = new QLabel(tr("P95 -- ms"));
 
     statusBar()->addWidget(progressBar_);
     statusBar()->addWidget(statusTotal_);
@@ -466,12 +474,12 @@ void MainWindow::setupStatusBar() {
 }
 
 void MainWindow::onSelectFolder() {
-    QString folder = QFileDialog::getExistingDirectory(this, tr("Select Image Folder"));
+    QString folder = QFileDialog::getExistingDirectory(this, tr("选择图片文件夹"));
     if (folder.isEmpty()) return;
 
     selectedFolder_ = folder;
     folderLabel_->setText(folder);
-    startAction_->setEnabled(true);
+    startBtn_->setEnabled(true);
     pipeline_->setImageFolder(selectedFolder_.toStdString());
 
     application::LogManager::instance().info("Selected folder: " + selectedFolder_.toStdString());
@@ -480,6 +488,10 @@ void MainWindow::onSelectFolder() {
 void MainWindow::onStart() {
     setUiEnabled(false);
     gridModel_->clear();
+    classCounts_.fill(0);
+    for (int i = 0; i < static_cast<int>(model::AllDefectClasses.size()); ++i) {
+        legend_->setCount(i, 0);
+    }
     progressBar_->setVisible(true);
     progressBar_->setValue(0);
 
@@ -506,7 +518,7 @@ void MainWindow::onStart() {
 void MainWindow::onStop() {
     auto token = pipeline_->cancelToken();
     if (token) token->cancel();
-    stopAction_->setEnabled(false);
+    stopBtn_->setEnabled(false);
     application::LogManager::instance().info("Pipeline stop requested");
 }
 
@@ -514,9 +526,18 @@ void MainWindow::onImageDone(int done, int total,
                              const model::ImageEntry& img,
                              const model::ClassificationResult& result) {
     gridModel_->addResult(img, result);
+
+    if (result.predicted.has_value()) {
+        int idx = model::defectClassIndex(*result.predicted);
+        if (idx >= 0 && idx < static_cast<int>(classCounts_.size())) {
+            classCounts_[idx]++;
+            legend_->setCount(idx, classCounts_[idx]);
+        }
+    }
+
     progressBar_->setMaximum(total);
     progressBar_->setValue(done);
-    statusTotal_->setText(tr("Total: %1/%2").arg(done).arg(total));
+    statusTotal_->setText(tr("总图 %1/%2").arg(done).arg(total));
 }
 
 void MainWindow::onErrorOccurred(const model::ImageEntry& img, model::ErrorCode ec) {
@@ -539,68 +560,77 @@ void MainWindow::onGridClicked(const QModelIndex& index) {
 }
 
 void MainWindow::onFilterChanged() {
-    gridFilter_->setShowClassified(chkClassified_->isChecked());
-    gridFilter_->setShowUncertain(chkUncertain_->isChecked());
-    gridFilter_->setShowFailed(chkFailed_->isChecked());
+    gridFilter_->setSelectedClass(legend_->selectedIndex());
     gridFilter_->setMinConfidence(confSlider_->value() / 100.0);
     gridFilter_->setNameFilter(nameEdit_->text());
 }
 
 void MainWindow::updateStatusBar(const model::RunReport& report) {
-    statusTotal_->setText(tr("Total: %1").arg(report.totalImages));
-    statusSuccess_->setText(tr("Success: %1").arg(report.successCount));
-    statusFailed_->setText(tr("Failed: %1").arg(report.failedCount));
-    statusAvg_->setText(tr("Avg: %1 ms").arg(QString::number(report.avgCycleTimeMs, 'f', 1)));
-    statusP95_->setText(tr("P95: %1 ms").arg(QString::number(report.p95CycleTimeMs, 'f', 1)));
+    statusTotal_->setText(tr("总图 %1").arg(report.totalImages));
+    statusSuccess_->setText(tr("成功 %1").arg(report.successCount));
+    statusFailed_->setText(tr("失败 %1").arg(report.failedCount));
+    statusAvg_->setText(tr("平均 %1 ms").arg(QString::number(report.avgCycleTimeMs, 'f', 1)));
+    statusP95_->setText(tr("P95 %1 ms").arg(QString::number(report.p95CycleTimeMs, 'f', 1)));
+
+    statusSuccess_->setStyleSheet(
+        QString("color:%1;").arg(report.successCount > 0 ? p5::kSuccess : p5::kGray));
+    statusFailed_->setStyleSheet(
+        QString("color:%1;").arg(report.failedCount > 0 ? p5::kFail : p5::kGray));
 }
 
 void MainWindow::showPreview(const ResultItem& item) {
-    imageScene_->clear();
-
     cv::Mat mat = cv::imread(item.entry.filePath, cv::IMREAD_COLOR);
     if (!mat.empty()) {
         QImage qimg = RunBridge::toDisplayImage(mat);
-        QPixmap pm = QPixmap::fromImage(qimg);
-        imageScene_->addPixmap(pm);
-        imageScene_->setSceneRect(pm.rect());
-        imageView_->fitInView(imageScene_->sceneRect(), Qt::KeepAspectRatio);
+        imageView_->setPixmap(QPixmap::fromImage(qimg));
+    } else {
+        imageView_->clear();
     }
 
     if (item.entry.status == model::ImageStatus::LoadFailed) {
-        predictionLabel_->setText(tr("Load failed"));
-        predictionLabel_->setStyleSheet("color: #ff6666; font-weight: bold; font-size: 14px;");
+        predictionLabel_->setText(tr("加载失败"));
+        predictionLabel_->setStyleSheet("color:#FF5C5C; font-weight:bold; font-size:14px;");
     } else if (item.result.predicted.has_value()) {
         auto dc = *item.result.predicted;
         predictionLabel_->setText(
-            tr("Prediction: %1 (%2) - %3%")
+            tr("%1 (%2) — 置信度 %3%")
                 .arg(QString::fromUtf8(model::defectClassChinese(dc)),
                      QString::fromUtf8(model::defectClassAbbr(dc)),
                      QString::number(static_cast<int>(item.result.confidence * 100))));
-        predictionLabel_->setStyleSheet("color: #66ccff; font-weight: bold; font-size: 14px;");
+        predictionLabel_->setStyleSheet(
+            QString("color:%1; font-weight:bold; font-size:14px;")
+                .arg(defectClassColor(dc).name()));
     } else {
         predictionLabel_->setText(
-            tr("Unable to classify (max confidence %1%)")
+            tr("无法判定（最高置信度 %1%）")
                 .arg(QString::number(static_cast<int>(item.result.confidence * 100))));
-        predictionLabel_->setStyleSheet("color: #cccccc; font-weight: bold; font-size: 14px;");
+        predictionLabel_->setStyleSheet("color:#B8B8C0; font-weight:bold; font-size:14px;");
     }
 
+    // 固定类别顺序展示；预测类别高亮；得分条 0→目标值 300ms 填充
     for (size_t i = 0; i < model::AllDefectClasses.size(); ++i) {
-        int pct = static_cast<int>(item.result.scores[i] * 100);
-        scoreBars_[i]->setValue(pct);
+        auto dc = model::AllDefectClasses[i];
+        bool highlight = item.result.predicted.has_value() &&
+                         *item.result.predicted == dc;
+        scoreBars_[i]->setHighlight(highlight);
+
+        auto* anim = new QPropertyAnimation(scoreBars_[i], "score", this);
+        anim->setDuration(300);
+        anim->setStartValue(scoreBars_[i]->score());
+        anim->setEndValue(item.result.scores[i]);
+        anim->setEasingCurve(QEasingCurve::OutCubic);
+        anim->start(QAbstractAnimation::DeleteWhenStopped);
     }
 }
 
 void MainWindow::setUiEnabled(bool enabled) {
-    startAction_->setEnabled(enabled && !selectedFolder_.isEmpty());
-    stopAction_->setEnabled(!enabled);
-    folderLabel_->setEnabled(enabled);
-    progressBar_->setVisible(!enabled);
-
-    chkClassified_->setEnabled(enabled);
-    chkUncertain_->setEnabled(enabled);
-    chkFailed_->setEnabled(enabled);
+    startBtn_->setEnabled(enabled && !selectedFolder_.isEmpty());
+    stopBtn_->setEnabled(!enabled);
+    selectBtn_->setEnabled(enabled);
     confSlider_->setEnabled(enabled);
     nameEdit_->setEnabled(enabled);
+    legend_->setEnabled(enabled);
+    progressBar_->setVisible(!enabled);
 }
 
 }  // namespace ui

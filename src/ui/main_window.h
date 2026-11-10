@@ -2,17 +2,10 @@
 
 #include <QMainWindow>
 #include <QListView>
-#include <QDockWidget>
-#include <QToolBar>
-#include <QStatusBar>
-#include <QPushButton>
-#include <QLabel>
-#include <QCheckBox>
 #include <QSlider>
 #include <QLineEdit>
 #include <QProgressBar>
-#include <QGraphicsView>
-#include <QGraphicsScene>
+#include <QLabel>
 #include <QAbstractListModel>
 #include <QSortFilterProxyModel>
 #include <QStyledItemDelegate>
@@ -30,6 +23,11 @@
 
 namespace qf {
 namespace ui {
+
+class ChamferButton;
+class ScoreBar;
+class ClassLegend;
+class ImagePreview;
 
 struct ResultItem {
     model::ImageEntry            entry;
@@ -59,9 +57,7 @@ class ResultFilterProxy : public QSortFilterProxyModel {
 public:
     explicit ResultFilterProxy(QObject* parent = nullptr);
 
-    void setShowClassified(bool show);
-    void setShowUncertain(bool show);
-    void setShowFailed(bool show);
+    void setSelectedClass(int classIndex);  // -1 = 全部
     void setMinConfidence(double minConf);
     void setNameFilter(const QString& filter);
 
@@ -69,9 +65,7 @@ protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
 
 private:
-    bool showClassified_ = true;
-    bool showUncertain_  = true;
-    bool showFailed_     = true;
+    int selectedClass_ = -1;
     double minConfidence_ = 0.0;
     QString nameFilter_;
 };
@@ -88,7 +82,7 @@ public:
 
 private:
     static constexpr int kThumbSize = 120;
-    static constexpr int kGap = 4;
+    static constexpr int kGap = 8;
 };
 
 class MainWindow : public QMainWindow {
@@ -112,42 +106,39 @@ private slots:
 
 private:
     void setupUi();
-    void setupToolBar();
-    void setupFilterPanel();
-    void setupCentralArea();
+    QWidget* buildToolBar();
+    QWidget* buildFilterPanel();
+    QWidget* buildDetailPanel();
+    QWidget* buildCentral();
     void setupStatusBar();
     void updateStatusBar(const model::RunReport& report);
     void showPreview(const ResultItem& item);
     void setUiEnabled(bool enabled);
 
-    QToolBar*   toolbar_      = nullptr;
-    QAction*    startAction_  = nullptr;
-    QAction*    stopAction_   = nullptr;
-    QLabel*     folderLabel_  = nullptr;
+    ChamferButton* selectBtn_ = nullptr;
+    ChamferButton* startBtn_  = nullptr;
+    ChamferButton* stopBtn_   = nullptr;
+    QLabel* brandLabel_       = nullptr;
+    QLabel* folderLabel_      = nullptr;
 
-    QDockWidget* filterDock_    = nullptr;
-    QCheckBox*   chkClassified_ = nullptr;
-    QCheckBox*   chkUncertain_  = nullptr;
-    QCheckBox*   chkFailed_     = nullptr;
-    QSlider*     confSlider_    = nullptr;
-    QLineEdit*   nameEdit_      = nullptr;
+    ClassLegend* legend_      = nullptr;
+    QSlider*     confSlider_  = nullptr;
+    QLineEdit*   nameEdit_    = nullptr;
 
     QListView*          gridView_  = nullptr;
     ResultListModel*    gridModel_ = nullptr;
     ResultFilterProxy*  gridFilter_ = nullptr;
 
-    QGraphicsView*  imageView_  = nullptr;
-    QGraphicsScene* imageScene_ = nullptr;
-    QLabel*         predictionLabel_ = nullptr;
+    ImagePreview*  imageView_       = nullptr;
+    QLabel*        predictionLabel_ = nullptr;
+    std::array<ScoreBar*, 6> scoreBars_{};
+    std::array<int, 6> classCounts_{};
 
-    std::array<QLabel*, 6>       scoreNameLabels_{};
-    std::array<QProgressBar*, 6> scoreBars_{};
-
-    QLabel*    statusTotal_  = nullptr;
+    QLabel*    statusTotal_   = nullptr;
     QLabel*    statusSuccess_ = nullptr;
-    QLabel*    statusFailed_ = nullptr;
-    QLabel*    statusAvg_    = nullptr;
-    QLabel*    statusP95_    = nullptr;
+    QLabel*    statusFailed_  = nullptr;
+    QLabel*    statusAvg_     = nullptr;
+    QLabel*    statusP95_     = nullptr;
     QProgressBar* progressBar_ = nullptr;
 
     std::unique_ptr<application::PipelineRunner> pipeline_;

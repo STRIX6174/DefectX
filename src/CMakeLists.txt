@@ -59,6 +59,7 @@ target_link_libraries(qtest_application PUBLIC
 add_library(qtest_ui STATIC
     ui/run_bridge.cpp
     ui/main_window.cpp
+    ui/p5_widgets.cpp
 )
 target_include_directories(qtest_ui PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
