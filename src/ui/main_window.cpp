@@ -127,14 +127,6 @@ void ResultFilterProxy::setSelectedClass(int classIndex) {
     selectedClass_ = classIndex;
     invalidateFilter();
 }
-void ResultFilterProxy::setMinConfidence(double minConf) {
-    minConfidence_ = minConf;
-    invalidateFilter();
-}
-void ResultFilterProxy::setNameFilter(const QString& filter) {
-    nameFilter_ = filter;
-    invalidateFilter();
-}
 
 bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
                                          const QModelIndex& sourceParent) const {
@@ -145,7 +137,6 @@ bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
     auto* item = model->itemAt(sourceRow);
     if (!item) return false;
 
-    bool loadFailed = (item->entry.status == model::ImageStatus::LoadFailed);
     int predIdx = item->result.predicted.has_value()
                       ? model::defectClassIndex(*item->result.predicted)
                       : -1;
@@ -153,16 +144,6 @@ bool ResultFilterProxy::filterAcceptsRow(int sourceRow,
     // 六类图例单选："只看某类"（失败图无类别，选中类别时被过滤）
     if (selectedClass_ >= 0 && predIdx != selectedClass_) {
         return false;
-    }
-
-    // 最低置信度（仅对已分类图像生效）
-    if (!loadFailed && minConfidence_ > 0.0 && item->result.confidence < minConfidence_) {
-        return false;
-    }
-
-    if (!nameFilter_.isEmpty()) {
-        auto fname = QFileInfo(QString::fromStdString(item->entry.filePath)).fileName();
-        if (!fname.contains(nameFilter_, Qt::CaseInsensitive)) return false;
     }
 
     return true;
@@ -363,23 +344,6 @@ QWidget* MainWindow::buildFilterPanel() {
     connect(legend_, &ClassLegend::selectionChanged, this, &MainWindow::onFilterChanged);
     lay->addWidget(legend_);
 
-    auto* confTitle = new QLabel(tr("最低置信度"));
-    confTitle->setStyleSheet("color:#B8B8C0;");
-    lay->addWidget(confTitle);
-
-    confSlider_ = new QSlider(Qt::Horizontal);
-    confSlider_->setRange(0, 100);
-    confSlider_->setValue(0);
-    lay->addWidget(confSlider_);
-
-    auto* searchTitle = new QLabel(tr("文件名搜索"));
-    searchTitle->setStyleSheet("color:#B8B8C0;");
-    lay->addWidget(searchTitle);
-
-    nameEdit_ = new QLineEdit;
-    nameEdit_->setPlaceholderText(tr("输入关键字…"));
-    lay->addWidget(nameEdit_);
-
     lay->addStretch();
     return panel;
 }
@@ -437,9 +401,6 @@ QWidget* MainWindow::buildCentral() {
 
     QWidget* filterPanel = buildFilterPanel();
     QWidget* detailPanel = buildDetailPanel();
-
-    connect(confSlider_, &QSlider::valueChanged, this, &MainWindow::onFilterChanged);
-    connect(nameEdit_,   &QLineEdit::textChanged,  this, &MainWindow::onFilterChanged);
 
     splitter->addWidget(filterPanel);
     splitter->addWidget(gridView_);
@@ -561,8 +522,6 @@ void MainWindow::onGridClicked(const QModelIndex& index) {
 
 void MainWindow::onFilterChanged() {
     gridFilter_->setSelectedClass(legend_->selectedIndex());
-    gridFilter_->setMinConfidence(confSlider_->value() / 100.0);
-    gridFilter_->setNameFilter(nameEdit_->text());
 }
 
 void MainWindow::updateStatusBar(const model::RunReport& report) {
@@ -627,8 +586,6 @@ void MainWindow::setUiEnabled(bool enabled) {
     startBtn_->setEnabled(enabled && !selectedFolder_.isEmpty());
     stopBtn_->setEnabled(!enabled);
     selectBtn_->setEnabled(enabled);
-    confSlider_->setEnabled(enabled);
-    nameEdit_->setEnabled(enabled);
     legend_->setEnabled(enabled);
     progressBar_->setVisible(!enabled);
 }

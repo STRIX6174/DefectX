@@ -2,8 +2,6 @@
 
 #include <QMainWindow>
 #include <QListView>
-#include <QSlider>
-#include <QLineEdit>
 #include <QProgressBar>
 #include <QLabel>
 #include <QAbstractListModel>
@@ -58,16 +56,12 @@ public:
     explicit ResultFilterProxy(QObject* parent = nullptr);
 
     void setSelectedClass(int classIndex);  // -1 = 全部
-    void setMinConfidence(double minConf);
-    void setNameFilter(const QString& filter);
 
 protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
 
 private:
     int selectedClass_ = -1;
-    double minConfidence_ = 0.0;
-    QString nameFilter_;
 };
 
 class ThumbnailDelegate : public QStyledItemDelegate {
@@ -122,8 +116,6 @@ private:
     QLabel* folderLabel_      = nullptr;
 
     ClassLegend* legend_      = nullptr;
-    QSlider*     confSlider_  = nullptr;
-    QLineEdit*   nameEdit_    = nullptr;
 
     QListView*          gridView_  = nullptr;
     ResultListModel*    gridModel_ = nullptr;

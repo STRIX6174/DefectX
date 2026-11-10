@@ -80,15 +80,6 @@ QLabel { background: transparent; color: #FFFFFF; }
 
 QListView { background: #0A0A0D; border: none; }
 
-QLineEdit { background: #14141A; border: 1px solid #3A3A44; padding: 4px 8px;
-            color: #FFFFFF; selection-background-color: #E60012; }
-QLineEdit:focus { border-color: #E60012; }
-
-QSlider::groove:horizontal { height: 4px; background: #3A3A44; }
-QSlider::sub-page:horizontal { background: #E60012; }
-QSlider::handle:horizontal { width: 14px; margin: -5px 0; border-radius: 7px;
-                             background: #E60012; }
-
 QProgressBar { background: #2A2A34; border: 1px solid #3A3A44; text-align: center;
                color: #FFFFFF; }
 QProgressBar::chunk { background: #E60012; }
