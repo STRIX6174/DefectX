@@ -7,6 +7,7 @@ set(CMAKE_AUTOMOC ON)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui LinguistTools)
+find_package(Threads REQUIRED)
 
 # ---- Core Model Library (header-only) ----
 add_library(qtest_model INTERFACE)
@@ -17,9 +18,9 @@ target_include_directories(qtest_model INTERFACE
 
 # ---- Algorithm Library (no Qt) ----
 add_library(qtest_algorithm STATIC
-    algorithm/qc_operator_cv.cpp
-    algorithm/defect_operators_cv.cpp
-    algorithm/decision_logic_industrial.cpp
+    algorithm/preprocess_operators.cpp
+    algorithm/defect_algorithms.cpp
+    algorithm/result_fusion.cpp
 )
 target_include_directories(qtest_algorithm PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -35,11 +36,9 @@ target_link_libraries(qtest_algorithm PUBLIC
 # ---- Application Library (no Qt) ----
 add_library(qtest_application STATIC
     application/image_loader.cpp
-    application/ground_truth_parser.cpp
     application/config_manager.cpp
     application/log_manager.cpp
     application/result_aggregator.cpp
-    application/result_marker.cpp
     application/report_generator.cpp
     application/pipeline_runner.cpp
 )
@@ -53,6 +52,7 @@ target_link_libraries(qtest_application PUBLIC
     qtest_model
     qtest_algorithm
     ${OpenCV_LIBS}
+    Threads::Threads
 )
 
 # ---- UI Library (with Qt) ----

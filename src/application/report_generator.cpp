@@ -1,13 +1,29 @@
 #include "application/report_generator.h"
 #include "application/log_manager.h"
-#include "model/defect_type.h"
+#include "model/defect_class.h"
+#include "model/error_code.h"
 
 #include <fstream>
 #include <iomanip>
-#include <filesystem>
 
 namespace qf {
 namespace application {
+
+namespace {
+
+const char* errorCodeName(model::ErrorCode ec) {
+    switch (ec) {
+    case model::ErrorCode::None:          return "NONE";
+    case model::ErrorCode::FileNotFound:  return "FILE_NOT_FOUND";
+    case model::ErrorCode::DecodeFailed:  return "DECODE_FAILED";
+    case model::ErrorCode::AlgorithmFailed: return "ALGORITHM_FAILED";
+    case model::ErrorCode::Timeout:       return "TIMEOUT";
+    case model::ErrorCode::Unknown:       return "UNKNOWN";
+    }
+    return "UNKNOWN";
+}
+
+}  // anonymous namespace
 
 void ReportGenerator::generateCsv(const model::RunReport& report, const std::string& outputPath) {
     std::ofstream f(outputPath);
@@ -16,59 +32,19 @@ void ReportGenerator::generateCsv(const model::RunReport& report, const std::str
         return;
     }
 
-    f << "FileName,Status,DefectTypes,DefectCount,ElapsedMs\n";
-    for (const auto& [img, ir] : report.details) {
-        auto fname = std::filesystem::path(img.filePath).filename().string();
-
-        std::string status;
-        switch (ir.finalStatus) {
-        case model::ImageStatus::Defective:  status = "DEFECT";   break;
-        case model::ImageStatus::Pass:       status = "PASS";     break;
-        case model::ImageStatus::Invalid_Qc: status = "QC_REJECT"; break;
-        case model::ImageStatus::LoadFailed: status = "FAILED";   break;
-        default:                            status = "UNKNOWN";  break;
-        }
-
-        std::string types;
-        for (const auto& def : ir.flatDefects()) {
-            if (!types.empty()) types += ";";
-            types += model::defectTypeName(def.type);
-        }
-        if (types.empty()) types = "none";
-
-        f << fname << ","
-          << status << ","
-          << types << ","
-          << ir.flatDefects().size() << ","
-          << std::fixed << std::setprecision(1) << ir.elapsedMs << "\n";
-    }
-
-    f << "\n# Summary\n";
-    f << "Total," << report.totalImages << "\n";
-    f << "Defective," << report.defective << "\n";
-    f << "Passed," << report.passed << "\n";
-    f << "QC_Rejected," << report.qcRejected << "\n";
-    f << "Failed," << report.failedCount << "\n";
-
-    if (report.missRate.has_value()) {
-        f << "MissRate," << std::fixed << std::setprecision(4) << *report.missRate << "\n";
-    }
-    if (report.overkillRate.has_value()) {
-        f << "OverkillRate," << std::fixed << std::setprecision(4) << *report.overkillRate << "\n";
-    }
-    f << "TotalElapsedMs," << std::fixed << std::setprecision(0) << report.totalElapsedMs << "\n";
+    f << "# Summary\n";
+    f << "TotalImages," << report.totalImages << "\n";
+    f << "SuccessCount," << report.successCount << "\n";
+    f << "FailedCount," << report.failedCount << "\n";
+    f << "AvgCycleTimeMs," << std::fixed << std::setprecision(3) << report.avgCycleTimeMs << "\n";
+    f << "P95CycleTimeMs," << std::fixed << std::setprecision(3) << report.p95CycleTimeMs << "\n";
     f << "Partial," << (report.isPartial ? "true" : "false") << "\n";
 
-    if (!report.perType.empty()) {
-        f << "\n# Per-Type Summary\n";
-        f << "Type,TP,FP,FN,MissRate,OverkillRate\n";
-        for (const auto& r : report.perType) {
-            f << model::defectTypeName(r.type) << ","
-              << r.tp << ","
-              << r.fp << ","
-              << r.fn << ","
-              << std::fixed << std::setprecision(4) << r.missRate << ","
-              << std::fixed << std::setprecision(4) << r.overkillRate << "\n";
+    if (!report.errorDetails.empty()) {
+        f << "\n# Errors\n";
+        f << "FileName,ErrorCode\n";
+        for (const auto& ed : report.errorDetails) {
+            f << ed.fileName << "," << errorCodeName(ed.errorCode) << "\n";
         }
     }
 
@@ -83,54 +59,19 @@ void ReportGenerator::generateJson(const model::RunReport& report, const std::st
     }
 
     f << "{\n";
-    f << "  \"total\": " << report.totalImages << ",\n";
-    f << "  \"defective\": " << report.defective << ",\n";
-    f << "  \"passed\": " << report.passed << ",\n";
-    f << "  \"qc_rejected\": " << report.qcRejected << ",\n";
-    f << "  \"failed\": " << report.failedCount << ",\n";
-
-    if (report.missRate.has_value())
-        f << "  \"miss_rate\": " << std::fixed << std::setprecision(4) << *report.missRate << ",\n";
-    if (report.overkillRate.has_value())
-        f << "  \"overkill_rate\": " << std::fixed << std::setprecision(4) << *report.overkillRate << ",\n";
-
-    f << "  \"total_elapsed_ms\": " << std::fixed << std::setprecision(0) << report.totalElapsedMs << ",\n";
+    f << "  \"total_images\": " << report.totalImages << ",\n";
+    f << "  \"success_count\": " << report.successCount << ",\n";
+    f << "  \"failed_count\": " << report.failedCount << ",\n";
+    f << "  \"avg_cycle_time_ms\": " << std::fixed << std::setprecision(3) << report.avgCycleTimeMs << ",\n";
+    f << "  \"p95_cycle_time_ms\": " << std::fixed << std::setprecision(3) << report.p95CycleTimeMs << ",\n";
     f << "  \"partial\": " << (report.isPartial ? "true" : "false") << ",\n";
 
-    if (!report.perType.empty()) {
-        f << "  \"per_type\": [\n";
-        for (size_t i = 0; i < report.perType.size(); ++i) {
-            const auto& r = report.perType[i];
-            f << "    {\n";
-            f << "      \"type\": \"" << model::defectTypeName(r.type) << "\",\n";
-            f << "      \"tp\": " << r.tp << ",\n";
-            f << "      \"fp\": " << r.fp << ",\n";
-            f << "      \"fn\": " << r.fn << ",\n";
-            f << "      \"miss_rate\": " << std::fixed << std::setprecision(4) << r.missRate << ",\n";
-            f << "      \"overkill_rate\": " << std::fixed << std::setprecision(4) << r.overkillRate << "\n";
-            f << "    }" << (i < report.perType.size() - 1 ? "," : "") << "\n";
-        }
-        f << "  ],\n";
-    }
-
-    f << "  \"details\": [\n";
-    for (size_t i = 0; i < report.details.size(); ++i) {
-        const auto& [img, ir] = report.details[i];
-        auto fname = std::filesystem::path(img.filePath).filename().string();
-        f << "    {\n";
-        f << "      \"file\": \"" << fname << "\",\n";
-        f << "      \"status\": \"";
-        switch (ir.finalStatus) {
-        case model::ImageStatus::Defective:  f << "DEFECT"; break;
-        case model::ImageStatus::Pass:       f << "PASS"; break;
-        case model::ImageStatus::Invalid_Qc: f << "QC_REJECT"; break;
-        case model::ImageStatus::LoadFailed: f << "FAILED"; break;
-        default:                            f << "UNKNOWN"; break;
-        }
-        f << "\",\n";
-        f << "  \"defect_count\": " << ir.flatDefects().size() << ",\n";
-        f << "  \"elapsed_ms\": " << std::fixed << std::setprecision(1) << ir.elapsedMs << "\n";
-        f << "    }" << (i < report.details.size() - 1 ? "," : "") << "\n";
+    f << "  \"errors\": [\n";
+    for (size_t i = 0; i < report.errorDetails.size(); ++i) {
+        const auto& ed = report.errorDetails[i];
+        f << "    {\"file\": \"" << ed.fileName << "\", \"error_code\": \""
+          << errorCodeName(ed.errorCode) << "\"}"
+          << (i < report.errorDetails.size() - 1 ? "," : "") << "\n";
     }
     f << "  ]\n";
     f << "}\n";
@@ -138,5 +79,5 @@ void ReportGenerator::generateJson(const model::RunReport& report, const std::st
     LogManager::instance().info("JSON report saved: " + outputPath);
 }
 
-}
-}
+}  // namespace application
+}  // namespace qf

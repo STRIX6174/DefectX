@@ -8,14 +8,13 @@
 namespace qf {
 namespace application {
 
+// JSON 配置 → PipelineParams。
+// 配置结构见《基础属性设计蓝图2.0》2.3.1 节。
 class ConfigManager {
 public:
     std::optional<model::PipelineParams> loadFromFile(const std::string& configPath);
     model::PipelineParams defaults();
-
-private:
-    static model::DefectParam parseDefectParam(const std::string& json);
 };
 
-}
-}
+}  // namespace application
+}  // namespace qf

@@ -7,10 +7,9 @@ enum class ImageStatus {
     Pending,
     Processing,
     LoadFailed,
-    Invalid_Qc,
-    Defective,
-    Pass
+    Classified,
+    Skipped
 };
 
-}
-}
+}  // namespace model
+}  // namespace qf

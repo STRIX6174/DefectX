@@ -2,11 +2,14 @@
 .vscode/
 
 # Design docs
-总设计讨论MD/
-设计废稿/
+设计讨论&测试/
+设计废稿XXX/
+理论讨论/
+TestLAB/
 # Build output
 build/
 build-release/
+build-static/
 
 # IDE
 .vscode/

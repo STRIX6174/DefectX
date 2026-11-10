@@ -13,28 +13,28 @@
 #include <QProgressBar>
 #include <QGraphicsView>
 #include <QGraphicsScene>
-#include <QStandardItemModel>
+#include <QAbstractListModel>
 #include <QSortFilterProxyModel>
 #include <QStyledItemDelegate>
 #include <QPixmapCache>
-#include <QComboBox>
 
+#include <array>
 #include <thread>
+#include <vector>
+#include <memory>
 
 #include "application/pipeline_runner.h"
 #include "ui/run_bridge.h"
 #include "model/run_report.h"
-
-#include <vector>
-#include <memory>
+#include "model/classification_result.h"
 
 namespace qf {
 namespace ui {
 
 struct ResultItem {
-    model::ImageEntry     entry;
-    model::InspectionResult result;
-    QPixmap               thumbnail;
+    model::ImageEntry            entry;
+    model::ClassificationResult  result;
+    QPixmap                      thumbnail;
 };
 
 class ResultListModel : public QAbstractListModel {
@@ -46,7 +46,7 @@ public:
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     Qt::ItemFlags flags(const QModelIndex& index) const override;
 
-    void addResult(const model::ImageEntry& entry, const model::InspectionResult& result);
+    void addResult(const model::ImageEntry& entry, const model::ClassificationResult& result);
     void clear();
     const ResultItem* itemAt(int row) const;
 
@@ -59,9 +59,8 @@ class ResultFilterProxy : public QSortFilterProxyModel {
 public:
     explicit ResultFilterProxy(QObject* parent = nullptr);
 
-    void setShowDefective(bool show);
-    void setShowQcRejected(bool show);
-    void setShowPassed(bool show);
+    void setShowClassified(bool show);
+    void setShowUncertain(bool show);
     void setShowFailed(bool show);
     void setMinConfidence(double minConf);
     void setNameFilter(const QString& filter);
@@ -70,13 +69,11 @@ protected:
     bool filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const override;
 
 private:
-    bool showDefective_   = true;
-    bool showQcRejected_  = true;
-    bool showPassed_      = true;
-    bool showFailed_      = true;
+    bool showClassified_ = true;
+    bool showUncertain_  = true;
+    bool showFailed_     = true;
     double minConfidence_ = 0.0;
     QString nameFilter_;
-    ResultListModel* sourceModel_ = nullptr;
 };
 
 class ThumbnailDelegate : public QStyledItemDelegate {
@@ -107,13 +104,11 @@ private slots:
     void onStop();
     void onImageDone(int done, int total,
                      const model::ImageEntry& img,
-                     const model::InspectionResult& result);
+                     const model::ClassificationResult& result);
     void onErrorOccurred(const model::ImageEntry& img, model::ErrorCode ec);
     void onFinished(const model::RunReport& report);
     void onGridClicked(const QModelIndex& index);
     void onFilterChanged();
-    void onPrevDefect();
-    void onNextDefect();
 
 private:
     void setupUi();
@@ -123,61 +118,44 @@ private:
     void setupStatusBar();
     void updateStatusBar(const model::RunReport& report);
     void showPreview(const ResultItem& item);
-    void updateDefectDisplay();
     void setUiEnabled(bool enabled);
 
-    QToolBar*   toolbar_       = nullptr;
-    QAction*    startAction_   = nullptr;
-    QAction*    stopAction_    = nullptr;
-    QLabel*     folderLabel_   = nullptr;
+    QToolBar*   toolbar_      = nullptr;
+    QAction*    startAction_  = nullptr;
+    QAction*    stopAction_   = nullptr;
+    QLabel*     folderLabel_  = nullptr;
 
-    QDockWidget* filterDock_   = nullptr;
-    QCheckBox*   chkDefective_ = nullptr;
-    QCheckBox*   chkQcReject_  = nullptr;
-    QCheckBox*   chkPassed_    = nullptr;
-    QCheckBox*   chkFailed_    = nullptr;
-    QCheckBox*   chkQcEnabled_ = nullptr;
-    QCheckBox*   chkParallelEnabled_ = nullptr;
-    QSlider*     confSlider_   = nullptr;
-    QLineEdit*   nameEdit_     = nullptr;
+    QDockWidget* filterDock_    = nullptr;
+    QCheckBox*   chkClassified_ = nullptr;
+    QCheckBox*   chkUncertain_  = nullptr;
+    QCheckBox*   chkFailed_     = nullptr;
+    QSlider*     confSlider_    = nullptr;
+    QLineEdit*   nameEdit_      = nullptr;
 
-    QListView*          gridView_   = nullptr;
-    ResultListModel*    gridModel_  = nullptr;
+    QListView*          gridView_  = nullptr;
+    ResultListModel*    gridModel_ = nullptr;
     ResultFilterProxy*  gridFilter_ = nullptr;
 
-    QGraphicsView*  defectZoomView_  = nullptr;
-    QGraphicsScene* defectZoomScene_ = nullptr;
-    QGraphicsView*  overviewView_    = nullptr;
-    QGraphicsScene* overviewScene_   = nullptr;
+    QGraphicsView*  imageView_  = nullptr;
+    QGraphicsScene* imageScene_ = nullptr;
+    QLabel*         predictionLabel_ = nullptr;
 
-    QPushButton*   prevDefectBtn_   = nullptr;
-    QPushButton*   nextDefectBtn_   = nullptr;
-    QLabel*        defectNavLabel_  = nullptr;
+    std::array<QLabel*, 6>       scoreNameLabels_{};
+    std::array<QProgressBar*, 6> scoreBars_{};
 
-    QString                          previewImagePath_;
-    std::vector<model::DefectRecord> previewDefects_;
-    int                              previewDefectIdx_ = 0;
-
-    QLabel*    statusTotal_    = nullptr;
-    QLabel*    statusDefect_   = nullptr;
-    QLabel*    statusPassed_   = nullptr;
-    QLabel*    statusQcRej_    = nullptr;
-    QLabel*    statusFailed_   = nullptr;
-    QLabel*    statusMissRate_ = nullptr;
-    QLabel*    statusOverRate_ = nullptr;
-    QLabel*    statusTime_     = nullptr;
+    QLabel*    statusTotal_  = nullptr;
+    QLabel*    statusSuccess_ = nullptr;
+    QLabel*    statusFailed_ = nullptr;
+    QLabel*    statusAvg_    = nullptr;
+    QLabel*    statusP95_    = nullptr;
     QProgressBar* progressBar_ = nullptr;
 
     std::unique_ptr<application::PipelineRunner> pipeline_;
     std::shared_ptr<RunBridge> bridge_;
-    std::thread            workerThread_;
+    std::thread workerThread_;
 
     QString selectedFolder_;
-    QString configPath_;
-    QString gtPath_;
-
-    std::vector<std::string> pendingImageFiles_;
 };
 
-}
-}
+}  // namespace ui
+}  // namespace qf

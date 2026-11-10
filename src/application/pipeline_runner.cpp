@@ -1,33 +1,137 @@
 #include "application/pipeline_runner.h"
 #include "application/log_manager.h"
+#include "application/result_aggregator.h"
+#include "application/report_generator.h"
+
+#include "algorithm/preprocess_operators.h"
+#include "algorithm/defect_algorithms.h"
+#include "algorithm/result_fusion.h"
+#include "model/defect_class.h"
 
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
-#include <future>
-#include <cassert>
+#include <cctype>
 
 namespace fs = std::filesystem;
 
 namespace qf {
 namespace application {
 
-PipelineRunner::PipelineRunner() {
-    cancelToken_ = std::make_shared<CancelToken>();
+// ---------------------------------------------------------------------------
+// ParallelClassifier
+// ---------------------------------------------------------------------------
+ParallelClassifier::~ParallelClassifier() {
+    shutdown();
 }
+
+void ParallelClassifier::configure(int threadCount, const model::PipelineParams& params) {
+    shutdown();
+
+    if (threadCount < 1) threadCount = 1;
+    if (threadCount > 6) threadCount = 6;
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        stop_ = false;
+        generation_ = 0;
+        doneCount_ = 0;
+    }
+
+    for (int i = 0; i < threadCount; ++i) {
+        model::DefectClass type = model::AllDefectClasses[i];
+        auto it = params.algorithms.find(type);
+        model::AlgorithmParams ap =
+            (it != params.algorithms.end()) ? it->second : model::AlgorithmParams{};
+        workers_.emplace_back(&ParallelClassifier::workerLoop, this, i, type, ap);
+    }
+
+    LogManager::instance().info("ParallelClassifier started with " +
+                                std::to_string(threadCount) + " workers");
+}
+
+void ParallelClassifier::workerLoop(int index, model::DefectClass type,
+                                    model::AlgorithmParams params) {
+    int lastGen = 0;
+    while (true) {
+        cv::Mat gray;
+        int gen = 0;
+        {
+            std::unique_lock<std::mutex> lk(mtx_);
+            startCv_.wait(lk, [this, &lastGen]() {
+                return stop_ || generation_ > lastGen;
+            });
+            if (stop_) return;
+            lastGen = generation_;
+            gen = lastGen;
+            gray = currentGray_;
+        }
+
+        // 运行该类别算法（共享输入为浅拷贝，数据引用计数保证存活）
+        model::DefectScore score = algorithm::runSingleAlgorithm(type, gray, params);
+
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            if (gen == generation_ && !stop_) {
+                results_[index] = score;
+                ++doneCount_;
+                doneCv_.notify_one();
+            }
+        }
+    }
+}
+
+std::array<model::DefectScore, 6> ParallelClassifier::classify(const cv::Mat& gray, int timeoutMs) {
+    std::array<model::DefectScore, 6> out{};
+    if (workers_.empty()) {
+        return out;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        currentGray_ = gray;  // 浅拷贝，引用计数保证底层数据存活
+        for (size_t i = 0; i < out.size(); ++i) {
+            out[i].defectClass = model::AllDefectClasses[i];
+        }
+        results_.fill(model::DefectScore{});
+        doneCount_ = 0;
+        ++generation_;
+    }
+    startCv_.notify_all();
+
+    {
+        std::unique_lock<std::mutex> lk(mtx_);
+        bool finished = doneCv_.wait_for(lk, std::chrono::milliseconds(timeoutMs), [this]() {
+            return doneCount_ >= static_cast<int>(workers_.size());
+        });
+        if (!finished) {
+            LogManager::instance().warn("Parallel classify timed out");
+        }
+        out = results_;
+    }
+    return out;
+}
+
+void ParallelClassifier::shutdown() {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        stop_ = true;
+    }
+    startCv_.notify_all();
+    for (auto& th : workers_) {
+        if (th.joinable()) th.join();
+    }
+    workers_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// PipelineRunner
+// ---------------------------------------------------------------------------
+PipelineRunner::PipelineRunner()
+    : cancelToken_(std::make_shared<CancelToken>()) {}
 
 PipelineRunner::~PipelineRunner() {
-    stopWorkers();
-}
-
-void PipelineRunner::stopWorkers() {
-    {
-        std::lock_guard<std::mutex> lk(workMutex_);
-        workersActive_ = false;
-    }
-    workCv_.notify_all();
-    for (auto& th : workers_) th.join();
-    workers_.clear();
+    classifier_.shutdown();
 }
 
 void PipelineRunner::setProgressCallback(std::shared_ptr<RunProgressCallback> cb) {
@@ -38,98 +142,17 @@ void PipelineRunner::setCancelToken(CancelTokenPtr token) {
     cancelToken_ = std::move(token);
 }
 
-void PipelineRunner::setQcEnabled(bool enabled) {
-    qcEnabled_.store(enabled, std::memory_order_release);
-}
-
-void PipelineRunner::setParallelEnabled(bool enabled) {
-    parallelEnabled_.store(enabled, std::memory_order_release);
-}
-
 void PipelineRunner::setConfig(const model::PipelineParams& params) {
-    if (running_) {
+    if (running_.load()) {
         LogManager::instance().warn("Cannot change config while pipeline is running");
         return;
     }
-
     params_ = params;
-
-    qcEnabled_.store(params.qcEnabled, std::memory_order_release);
-    timeoutMs_ = params.timeoutPerImageMs > 0 ? params.timeoutPerImageMs : 5000;
-
-    qcOp_ = algorithm::createQcOperator(params_);
-    defectOps_.clear();
-    for (auto dt : model::AllDefectTypes) {
-        auto it = params_.defectParams.find(dt);
-        auto dp = (it != params_.defectParams.end()) ? it->second : model::DefectParam{};
-        defectOps_.push_back(algorithm::createDefectOperator(dt, dp));
-    }
-    decision_ = algorithm::createDecisionLogic();
-
-    assert(defectOps_.size() == model::AllDefectTypes.size());
-
-    stopWorkers();
-
-    workersActive_ = true;
-    size_t N = defectOps_.size();
-    for (size_t t = 0; t < N; ++t) {
-        workers_.emplace_back([this, N]() {
-            while (true) {
-                std::unique_lock<std::mutex> lk(workMutex_);
-                workCv_.wait(lk, [this]() {
-                    return currentWork_.img != nullptr || !workersActive_;
-                });
-                if (!workersActive_) return;
-
-                auto* img    = currentWork_.img;
-                auto* result = currentWork_.result;
-
-                lk.unlock();
-
-                while (true) {
-                    size_t i;
-                    {
-                        std::lock_guard<std::mutex> lk2(workMutex_);
-                        if (currentWork_.img == nullptr) break;
-                        i = opsDone_;
-                        if (i >= N) break;
-                        ++opsDone_;
-                    }
-                    try {
-                        auto defs = defectOps_[i]->detect(*img);
-                        result->perType[i].defects = std::move(defs);
-                        result->perType[i].status =
-                            decision_->decidePerType(result->perType[i].defects);
-                    } catch (const std::exception& e) {
-                        LogManager::instance().error(
-                            "Operator " + std::to_string(i) + " crashed: " + e.what());
-                        result->perType[i].status = model::ImageStatus::LoadFailed;
-                    }
-                }
-
-                doneCv_.notify_one();
-            }
-        });
-    }
-
-    LogManager::instance().info("Pipeline configured with " +
-        std::to_string(defectOps_.size()) + " defect operators");
+    classifier_.configure(params.gate.parallelThreads, params_);
 }
 
 void PipelineRunner::setImageFolder(const std::string& folderPath) {
     imageFolder_ = folderPath;
-}
-
-void PipelineRunner::setGroundTruthPath(const std::string& gtPath) {
-    gtPath_ = gtPath;
-}
-
-void PipelineRunner::setOutputDir(const std::string& outputDir) {
-    outputDir_ = outputDir;
-}
-
-void PipelineRunner::setSaveMarkedImages(bool save) {
-    saveMarked_ = save;
 }
 
 std::vector<std::string> PipelineRunner::scanImageFiles(const std::string& folder) {
@@ -140,8 +163,9 @@ std::vector<std::string> PipelineRunner::scanImageFiles(const std::string& folde
 
     for (const auto& entry : fs::recursive_directory_iterator(folder)) {
         if (!entry.is_regular_file()) continue;
-        auto ext = entry.path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         for (const auto& valid : exts) {
             if (ext == valid) {
                 files.push_back(entry.path().string());
@@ -156,201 +180,86 @@ std::vector<std::string> PipelineRunner::scanImageFiles(const std::string& folde
     return files;
 }
 
-model::ImageEntry PipelineRunner::buildImageEntry(
-    const std::string& filePath, const cv::Mat& img) {
-    return imageLoader_.buildEntry(filePath, img);
-}
+model::ClassificationResult PipelineRunner::processSingleImage(const cv::Mat& img) {
+    model::ClassificationResult result;
 
-model::InspectionResult PipelineRunner::processSingleImage(const cv::Mat& img) {
-    model::InspectionResult result;
-
-    if (qcEnabled_.load(std::memory_order_acquire)) {
-        if (!qcOp_) {
-            LogManager::instance().warn(
-                "QC is enabled but qcOp_ is null -- QC will be skipped. "
-                "Check config.json QC parameters.");
-        } else {
-            result.qcResult = qcOp_->evaluate(img);
-            result.qcExecuted = true;
-            if (!result.qcResult.passed) {
-                result.finalStatus = model::ImageStatus::Invalid_Qc;
-                return result;
-            }
-        }
+    // 预处理：灰度 → 标准尺寸 → 可选增强
+    cv::Mat gray = algorithm::preprocess(img, params_.preprocess);
+    if (gray.empty()) {
+        result.predicted = std::nullopt;
+        return result;
     }
 
-    result.perType.resize(model::AllDefectTypes.size());
-    for (size_t i = 0; i < model::AllDefectTypes.size(); ++i) {
-        result.perType[i].type = model::AllDefectTypes[i];
-    }
+    // 六类并行识别
+    auto scores = classifier_.classify(gray, params_.gate.timeoutPerImageMs);
 
-    assert(defectOps_.size() == result.perType.size());
-    for (size_t i = 0; i < defectOps_.size(); ++i) {
-        assert(defectOps_[i]->type() == result.perType[i].type);
-    }
-
-    if (parallelEnabled_.load(std::memory_order_acquire) && workersActive_.load(std::memory_order_acquire)) {
-        {
-            std::lock_guard<std::mutex> lk(workMutex_);
-            currentWork_ = {&img, &result};
-            opsDone_ = 0;
-        }
-        workCv_.notify_all();
-
-        {
-            std::unique_lock<std::mutex> lk(workMutex_);
-            bool finished = doneCv_.wait_for(lk, std::chrono::milliseconds(timeoutMs_),
-                [this]() { return opsDone_ >= defectOps_.size(); });
-            if (!finished) {
-                for (size_t i = 0; i < defectOps_.size(); ++i) {
-                    if (result.perType[i].status == model::ImageStatus::Pending) {
-                        result.perType[i].status = model::ImageStatus::LoadFailed;
-                    }
-                }
-                LogManager::instance().error("Parallel detection timed out after " +
-                    std::to_string(timeoutMs_) + "ms");
-            }
-            currentWork_.img = nullptr;
-        }
-    } else {
-        for (size_t i = 0; i < defectOps_.size(); ++i) {
-            auto defs = defectOps_[i]->detect(img);
-            result.perType[i].defects = std::move(defs);
-            result.perType[i].status =
-                decision_->decidePerType(result.perType[i].defects);
-        }
-    }
-
-    bool anyDefective = false;
-    for (auto& pt : result.perType) {
-        if (pt.status == model::ImageStatus::Defective) {
-            anyDefective = true;
-            break;
-        }
-    }
-    result.finalStatus = anyDefective ? model::ImageStatus::Defective
-                                      : model::ImageStatus::Pass;
+    // 汇总
+    result = algorithm::fuseScores(scores, params_.decision);
     return result;
 }
 
 void PipelineRunner::run() {
-    if (!qcOp_ || defectOps_.empty() || !decision_) {
-        LogManager::instance().error("Pipeline not configured. Call setConfig() first.");
-        if (progressCb_) {
-            progressCb_->onFinished(model::RunReport{});
-        }
+    if (running_.load()) {
+        LogManager::instance().warn("Pipeline already running");
         return;
     }
 
     running_ = true;
-    auto startTime = std::chrono::steady_clock::now();
     cancelToken_->reset();
 
+    ResultAggregator aggregator;
+
     auto files = scanImageFiles(imageFolder_);
-    if (files.empty()) {
-        LogManager::instance().warn("No image files found in: " + imageFolder_);
-        if (progressCb_) {
-            progressCb_->onFinished(model::RunReport{});
-        }
-        running_ = false;
-        return;
-    }
-
-    GroundTruthParser gtParser;
-    std::map<std::string, model::GroundTruthRecord> gtLookup;
-    bool hasGt = false;
-
-    if (!gtPath_.empty() && fs::exists(gtPath_)) {
-        auto gtResult = gtParser.parse(gtPath_, files);
-        if (!gtResult.errorMsg.has_value()) {
-            gtLookup = gtParser.buildLookup(gtResult);
-            hasGt = !gtLookup.empty();
-        }
-    }
-
-    if (!outputDir_.empty()) {
-        fs::create_directories(outputDir_);
-    }
-
-    ResultAggregator aggregator(gtLookup, hasGt);
     int total = static_cast<int>(files.size());
 
     for (int i = 0; i < total; ++i) {
-        if (cancelToken_->isCancelled()) break;
+        if (cancelToken_->isCancelled()) {
+            break;
+        }
+
+        const auto& filePath = files[i];
+
+        auto [img, err] = imageLoader_.load(filePath);
+        if (img.empty()) {
+            model::ImageEntry entry = imageLoader_.buildEntry(filePath, img);
+            entry.status = model::ImageStatus::LoadFailed;
+            entry.errorCode = (err != model::ErrorCode::None) ? err : model::ErrorCode::DecodeFailed;
+            if (progressCb_) progressCb_->onError(entry, entry.errorCode);
+            aggregator.addError(entry);
+            continue;
+        }
+
+        model::ImageEntry entry = imageLoader_.buildEntry(filePath, img);
+        entry.status = model::ImageStatus::Processing;
 
         auto t0 = std::chrono::steady_clock::now();
-
-        auto [img, errorCode] = imageLoader_.load(files[i]);
-        auto entry = buildImageEntry(files[i], img);
-
-        model::InspectionResult ir;
-
-        if (errorCode != model::ErrorCode::None) {
-            entry.errorCode = errorCode;
-            entry.status    = model::ImageStatus::LoadFailed;
-            ir.finalStatus  = model::ImageStatus::LoadFailed;
-        } else {
-            auto future = std::async(std::launch::async,
-                [this, img]() { return processSingleImage(img); });
-
-            auto status = future.wait_for(std::chrono::milliseconds(timeoutMs_));
-            if (status == std::future_status::ready) {
-                ir = future.get();
-            } else {
-                entry.errorCode = model::ErrorCode::DefectTimeout;
-                entry.status    = model::ImageStatus::LoadFailed;
-                ir.finalStatus  = model::ImageStatus::LoadFailed;
-                LogManager::instance().warn("Timeout on: " + files[i]);
-            }
-        }
-
+        model::ClassificationResult result = processSingleImage(img);
         auto t1 = std::chrono::steady_clock::now();
-        ir.elapsedMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        entry.status = ir.finalStatus;
+        result.cycleTimeMs =
+            std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        if (saveMarked_ && !outputDir_.empty() && !img.empty() &&
-            ir.finalStatus != model::ImageStatus::LoadFailed) {
-            auto fname = fs::path(files[i]).stem().string() + "_marked.jpg";
-            auto outPath = (fs::path(outputDir_) / fname).string();
-            auto marked = resultMarker_.drawDefectOverlay(img, ir);
-            resultMarker_.saveMarkedImage(marked, outPath);
-        }
-
-        aggregator.addResult(entry, ir);
+        entry.status = model::ImageStatus::Classified;
+        aggregator.addSuccess(entry, result);
 
         if (progressCb_) {
-            if (ir.finalStatus == model::ImageStatus::LoadFailed) {
-                progressCb_->onError(entry, entry.errorCode);
-            }
-            progressCb_->onImageDone(i + 1, total, entry, ir);
+            progressCb_->onImageDone(i + 1, total, entry, result);
         }
     }
 
-    auto endTime = std::chrono::steady_clock::now();
-    double totalMs = std::chrono::duration<double, std::milli>(endTime - startTime).count();
-    bool partial = cancelToken_->isCancelled();
+    bool isPartial = cancelToken_->isCancelled();
 
-    lastReport_ = aggregator.finalize(partial, totalMs);
+    lastReport_ = aggregator.finalize(isPartial);
 
-    if (!outputDir_.empty()) {
-        auto csvPath = (fs::path(outputDir_) / "report.csv").string();
-        auto jsonPath = (fs::path(outputDir_) / "report.json").string();
-        reportGen_.generateCsv(lastReport_, csvPath);
-        reportGen_.generateJson(lastReport_, jsonPath);
-    }
+    LogManager::instance().info("Pipeline finished: " +
+                                std::to_string(lastReport_.successCount) + " ok, " +
+                                std::to_string(lastReport_.failedCount) + " failed");
 
     if (progressCb_) {
         progressCb_->onFinished(lastReport_);
     }
 
-    LogManager::instance().info(
-        "Pipeline finished. Total: " + std::to_string(lastReport_.totalImages) +
-        " Defective: " + std::to_string(lastReport_.defective) +
-        " Time: " + std::to_string(static_cast<int>(totalMs)) + "ms" +
-        (partial ? " [PARTIAL]" : ""));
-
     running_ = false;
 }
 
-}
-}
+}  // namespace application
+}  // namespace qf

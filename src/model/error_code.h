@@ -7,10 +7,10 @@ enum class ErrorCode {
     None,
     FileNotFound,
     DecodeFailed,
-    QcTimeout,
-    DefectTimeout,
+    AlgorithmFailed,
+    Timeout,
     Unknown
 };
 
-}
-}
+}  // namespace model
+}  // namespace qf

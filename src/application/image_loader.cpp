@@ -7,7 +7,7 @@ namespace qf {
 namespace application {
 
 std::pair<cv::Mat, model::ErrorCode> ImageLoader::load(const std::string& filePath) {
-    cv::Mat img = cv::imread(filePath, cv::IMREAD_COLOR);
+    cv::Mat img = cv::imread(filePath, cv::IMREAD_GRAYSCALE);
     if (img.empty()) {
         return {img, model::ErrorCode::DecodeFailed};
     }
@@ -23,5 +23,5 @@ model::ImageEntry ImageLoader::buildEntry(const std::string& filePath, const cv:
     return entry;
 }
 
-}
-}
+}  // namespace application
+}  // namespace qf

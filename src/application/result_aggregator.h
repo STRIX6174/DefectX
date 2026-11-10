@@ -1,44 +1,30 @@
 #pragma once
 
 #include "model/run_report.h"
-#include "model/inspection_result.h"
-#include "model/ground_truth_record.h"
+#include "model/image_entry.h"
+#include "model/classification_result.h"
 
-#include <map>
-#include <string>
 #include <vector>
 
 namespace qf {
 namespace application {
 
+// 汇总无标签可记录指标：总图数/成功数/失败数/平均耗时/P95耗时/错误明细。
+// 不涉及任何标注或评估指标（TP/FP/FN/漏检率/过杀率）。
 class ResultAggregator {
 public:
-    ResultAggregator(
-        const std::map<std::string, model::GroundTruthRecord>& gtLookup,
-        bool hasGroundTruth);
-
-    void addResult(const model::ImageEntry& img, const model::InspectionResult& ir);
-    model::RunReport finalize(bool isPartial, double totalElapsedMs);
+    void addSuccess(const model::ImageEntry& img, const model::ClassificationResult& result);
+    void addError(const model::ImageEntry& img);
+    model::RunReport finalize(bool isPartial);
 
 private:
-    std::map<std::string, model::GroundTruthRecord> gtLookup_;
-    bool hasGroundTruth_;
-
-    int total_   = 0;
-    int qcRej_   = 0;
-    int defect_  = 0;
-    int passed_  = 0;
+    int success_ = 0;
     int failed_  = 0;
 
-    int tp_ = 0;
-    int fp_ = 0;
-    int fn_ = 0;
-
-    std::map<model::DefectType, model::PerTypeMetrics> perTypeMetrics_;
-
+    std::vector<double> cycleTimes_;
     std::vector<model::ErrorDetail> errors_;
-    std::vector<std::pair<model::ImageEntry, model::InspectionResult>> details_;
+    std::vector<model::ImageDetail> details_;
 };
 
-}
-}
+}  // namespace application
+}  // namespace qf

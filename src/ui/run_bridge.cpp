@@ -1,17 +1,20 @@
 #include "ui/run_bridge.h"
 
 #include <opencv2/imgproc.hpp>
-#include <QDebug>
 
 namespace qf {
 namespace ui {
 
 RunBridge::RunBridge(QObject* parent)
-    : QObject(parent) {}
+    : QObject(parent) {
+    qRegisterMetaType<model::ImageEntry>("qf::model::ImageEntry");
+    qRegisterMetaType<model::ClassificationResult>("qf::model::ClassificationResult");
+    qRegisterMetaType<model::RunReport>("qf::model::RunReport");
+}
 
 void RunBridge::onImageDone(int done, int total,
                             const model::ImageEntry& img,
-                            const model::InspectionResult& result) {
+                            const model::ClassificationResult& result) {
     emit imageDone(done, total, img, result);
 }
 
@@ -23,9 +26,7 @@ void RunBridge::onFinished(const model::RunReport& report) {
     emit finished(report);
 }
 
-QImage RunBridge::toDisplayImage(const model::ImageEntry& entry,
-                                 const cv::Mat& mat,
-                                 const model::InspectionResult* result) {
+QImage RunBridge::toDisplayImage(const cv::Mat& mat) {
     if (mat.empty()) return QImage();
 
     cv::Mat rgb;
@@ -42,5 +43,5 @@ QImage RunBridge::toDisplayImage(const model::ImageEntry& entry,
     return qimg.copy();
 }
 
-}
-}
+}  // namespace ui
+}  // namespace qf

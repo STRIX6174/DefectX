@@ -1,15 +1,195 @@
 #include "application/config_manager.h"
 #include "application/log_manager.h"
-#include "model/defect_type.h"
+#include "model/defect_class.h"
 
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <map>
+#include <vector>
+#include <cctype>
+#include <memory>
 
 namespace qf {
 namespace application {
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// 轻量 JSON 解析器（仅覆盖配置所需：object / array / number / string / bool）
+// ---------------------------------------------------------------------------
+struct JsonValue;
+using JsonObject = std::map<std::string, JsonValue>;
+using JsonArray  = std::vector<JsonValue>;
+
+struct JsonValue {
+    enum class Type { Null, Bool, Number, String, Array, Object } type = Type::Null;
+
+    bool        boolValue   = false;
+    double      numValue    = 0.0;
+    std::string strValue;
+    JsonArray   arrayValue;
+    JsonObject  objectValue;
+
+    bool isObject() const { return type == Type::Object; }
+    bool isNumber() const { return type == Type::Number; }
+    bool isString() const { return type == Type::String; }
+    bool isBool()   const { return type == Type::Bool; }
+};
+
+class JsonParser {
+public:
+    explicit JsonParser(const std::string& text) : text_(text), pos_(0) {}
+
+    JsonValue parse() {
+        skipWs();
+        JsonValue v = parseValue();
+        skipWs();
+        if (pos_ != text_.size()) {
+            throw std::runtime_error("JSON: trailing characters");
+        }
+        return v;
+    }
+
+private:
+    void skipWs() {
+        while (pos_ < text_.size() &&
+               (text_[pos_] == ' ' || text_[pos_] == '\t' ||
+                text_[pos_] == '\n' || text_[pos_] == '\r')) {
+            ++pos_;
+        }
+    }
+
+    char peek() const {
+        if (pos_ >= text_.size()) throw std::runtime_error("JSON: unexpected end");
+        return text_[pos_];
+    }
+
+    char get() {
+        char c = peek();
+        ++pos_;
+        return c;
+    }
+
+    void expect(char c) {
+        if (get() != c) throw std::runtime_error("JSON: unexpected character");
+    }
+
+    JsonValue parseValue() {
+        char c = peek();
+        if (c == '{') return parseObject();
+        if (c == '[') return parseArray();
+        if (c == '"') {
+            JsonValue v;
+            v.type = JsonValue::Type::String;
+            v.strValue = parseString();
+            return v;
+        }
+        if (c == 't' || c == 'f') return parseBool();
+        if (c == 'n') {
+            expect('n'); expect('u'); expect('l'); expect('l');
+            JsonValue v;
+            v.type = JsonValue::Type::Null;
+            return v;
+        }
+        return parseNumber();
+    }
+
+    JsonValue parseObject() {
+        expect('{');
+        JsonValue v;
+        v.type = JsonValue::Type::Object;
+        skipWs();
+        if (peek() == '}') { get(); return v; }
+        while (true) {
+            skipWs();
+            std::string key = parseString();
+            skipWs();
+            expect(':');
+            skipWs();
+            v.objectValue[key] = parseValue();
+            skipWs();
+            char c = get();
+            if (c == '}') break;
+            if (c != ',') throw std::runtime_error("JSON: expected ',' or '}'");
+        }
+        return v;
+    }
+
+    JsonValue parseArray() {
+        expect('[');
+        JsonValue v;
+        v.type = JsonValue::Type::Array;
+        skipWs();
+        if (peek() == ']') { get(); return v; }
+        while (true) {
+            skipWs();
+            v.arrayValue.push_back(parseValue());
+            skipWs();
+            char c = get();
+            if (c == ']') break;
+            if (c != ',') throw std::runtime_error("JSON: expected ',' or ']'");
+        }
+        return v;
+    }
+
+    std::string parseString() {
+        expect('"');
+        std::string out;
+        while (true) {
+            if (pos_ >= text_.size()) throw std::runtime_error("JSON: unterminated string");
+            char c = get();
+            if (c == '"') break;
+            if (c == '\\') {
+                char e = get();
+                switch (e) {
+                case '"':  out += '"';  break;
+                case '\\': out += '\\'; break;
+                case '/':  out += '/';  break;
+                case 'n':  out += '\n'; break;
+                case 't':  out += '\t'; break;
+                case 'r':  out += '\r'; break;
+                default:   out += e;    break;
+                }
+            } else {
+                out += c;
+            }
+        }
+        return out;
+    }
+
+    JsonValue parseBool() {
+        JsonValue v;
+        v.type = JsonValue::Type::Bool;
+        if (peek() == 't') {
+            expect('t'); expect('r'); expect('u'); expect('e');
+            v.boolValue = true;
+        } else {
+            expect('f'); expect('a'); expect('l'); expect('s'); expect('e');
+            v.boolValue = false;
+        }
+        return v;
+    }
+
+    JsonValue parseNumber() {
+        size_t start = pos_;
+        if (peek() == '-') ++pos_;
+        while (pos_ < text_.size() &&
+               (std::isdigit(static_cast<unsigned char>(text_[pos_])) ||
+                text_[pos_] == '.' || text_[pos_] == 'e' || text_[pos_] == 'E' ||
+                text_[pos_] == '+' || text_[pos_] == '-')) {
+            ++pos_;
+        }
+        std::string numStr = text_.substr(start, pos_ - start);
+        JsonValue v;
+        v.type = JsonValue::Type::Number;
+        v.numValue = std::stod(numStr);
+        return v;
+    }
+
+    const std::string& text_;
+    size_t pos_;
+};
 
 std::string readFile(const std::string& path) {
     std::ifstream f(path);
@@ -19,101 +199,165 @@ std::string readFile(const std::string& path) {
     return oss.str();
 }
 
-std::string trim(const std::string& s) {
-    auto start = s.find_first_not_of(" \t\n\r");
-    if (start == std::string::npos) return "";
-    auto end = s.find_last_not_of(" \t\n\r");
-    return s.substr(start, end - start + 1);
+const JsonValue* findMember(const JsonObject& obj, const std::string& key) {
+    auto it = obj.find(key);
+    return (it != obj.end()) ? &it->second : nullptr;
 }
 
-double extractDouble(const std::string& json, const std::string& key, double def) {
-    auto pos = json.find("\"" + key + "\"");
-    if (pos == std::string::npos) return def;
-    pos = json.find(':', pos);
-    if (pos == std::string::npos) return def;
-    auto valStr = trim(json.substr(pos + 1));
-    auto commaPos = valStr.find_first_of(",}\n\r");
-    if (commaPos != std::string::npos) valStr = valStr.substr(0, commaPos);
-    valStr = trim(valStr);
-    try { return std::stod(valStr); }
-    catch (...) { return def; }
+double num(const JsonValue* v, double def) {
+    return (v && v->isNumber()) ? v->numValue : def;
 }
 
-int extractInt(const std::string& json, const std::string& key, int def) {
-    return static_cast<int>(extractDouble(json, key, static_cast<double>(def)));
+int numInt(const JsonValue* v, int def) {
+    return (v && v->isNumber()) ? static_cast<int>(v->numValue) : def;
 }
 
-} // anonymous
+bool boolean(const JsonValue* v, bool def) {
+    return (v && v->isBool()) ? v->boolValue : def;
+}
+
+std::string str(const JsonValue* v, const std::string& def) {
+    return (v && v->isString()) ? v->strValue : def;
+}
+
+void parseAlgorithm(const JsonObject& obj, model::AlgorithmParams& p) {
+    p.threshold    = num(findMember(obj, "threshold"), p.threshold);
+    p.cannyLow     = numInt(findMember(obj, "canny_low"), p.cannyLow);
+    p.cannyHigh    = numInt(findMember(obj, "canny_high"), p.cannyHigh);
+    p.blockSize    = numInt(findMember(obj, "block_size"), p.blockSize);
+    p.cValue       = numInt(findMember(obj, "c_value"), p.cValue);
+    p.histDiff     = num(findMember(obj, "hist_diff"), p.histDiff);
+    p.tophatKernel = numInt(findMember(obj, "tophat_kernel"), p.tophatKernel);
+    p.blobCountMin = numInt(findMember(obj, "blob_count_min"), p.blobCountMin);
+    p.closeKernel  = numInt(findMember(obj, "close_kernel"), p.closeKernel);
+    p.aspectRatio  = num(findMember(obj, "aspect_ratio"), p.aspectRatio);
+    p.minLength    = numInt(findMember(obj, "min_length"), p.minLength);
+    p.metric       = str(findMember(obj, "metric"), p.metric);
+}
+
+}  // anonymous namespace
 
 model::PipelineParams ConfigManager::defaults() {
     model::PipelineParams p;
-    p.laplacianThreshold = 100.0;
-    p.overexposureHigh   = 245;
-    p.underexposureLow   = 10;
-    p.missRateMax        = 0.05;
-    p.overkillRateMax    = 0.10;
-    p.timeoutPerImageMs  = 5000;
+    p.version = 3;
 
-    model::DefectParam crazing;
-    crazing.edgeDensity = 0.05;
-    crazing.minArea     = 50;
-    p.defectParams[model::DefectType::Crazing] = crazing;
+    // 预处理默认全部关闭
+    p.preprocess.denoise  = model::DenoiseParams{};
+    p.preprocess.contrast = model::ContrastParams{};
+    p.preprocess.sharpen  = model::SharpenParams{};
 
-    model::DefectParam inclusion;
+    // 六类算法默认阈值与算子参数（与蓝图 2.3.1 一致）
+    model::AlgorithmParams crazing;
+    crazing.metric    = "edge_density";
+    crazing.threshold = 0.05;
+    crazing.cannyLow  = 50;
+    crazing.cannyHigh = 150;
+    p.algorithms[model::DefectClass::Crazing] = crazing;
+
+    model::AlgorithmParams inclusion;
+    inclusion.metric    = "area_ratio";
+    inclusion.threshold = 0.08;
     inclusion.blockSize = 31;
     inclusion.cValue    = 3;
-    inclusion.minArea   = 30;
-    p.defectParams[model::DefectType::Inclusion] = inclusion;
+    p.algorithms[model::DefectClass::Inclusion] = inclusion;
 
-    model::DefectParam patches;
-    patches.histDiff       = 0.3;
-    patches.localVariance  = 500.0;
-    p.defectParams[model::DefectType::Patches] = patches;
+    model::AlgorithmParams patches;
+    patches.metric    = "local_variance";
+    patches.threshold = 500.0;
+    patches.histDiff  = 0.3;
+    p.algorithms[model::DefectClass::Patches] = patches;
 
-    model::DefectParam pitted;
+    model::AlgorithmParams pitted;
+    pitted.metric       = "blob_count";
+    pitted.threshold    = 5;
     pitted.tophatKernel = 15;
     pitted.blobCountMin = 5;
-    p.defectParams[model::DefectType::PittedSurface] = pitted;
+    p.algorithms[model::DefectClass::PittedSurface] = pitted;
 
-    model::DefectParam scratches;
-    scratches.cannyLow     = 50;
-    scratches.cannyHigh    = 150;
-    scratches.minLength    = 80;
-    scratches.aspectRatio  = 3.0;
-    p.defectParams[model::DefectType::Scratches] = scratches;
+    model::AlgorithmParams scratches;
+    scratches.metric      = "line_length";
+    scratches.threshold   = 80;
+    scratches.cannyLow    = 50;
+    scratches.cannyHigh   = 150;
+    scratches.aspectRatio = 3.0;
+    scratches.minLength   = 80;
+    p.algorithms[model::DefectClass::Scratches] = scratches;
 
-    model::DefectParam ris;
+    model::AlgorithmParams ris;
+    ris.metric      = "texture_density";
+    ris.threshold   = 0.3;
     ris.blockSize   = 21;
     ris.closeKernel = 5;
-    p.defectParams[model::DefectType::RolledInScale] = ris;
+    p.algorithms[model::DefectClass::RolledInScale] = ris;
+
+    p.decision.mode          = "max_confidence";
+    p.decision.minConfidence = 0.3;
+
+    p.gate.timeoutPerImageMs = 5000;
+    p.gate.parallelThreads   = 6;
 
     return p;
 }
 
 std::optional<model::PipelineParams> ConfigManager::loadFromFile(const std::string& configPath) {
     try {
-        auto json = readFile(configPath);
+        auto text = readFile(configPath);
+        JsonParser parser(text);
+        JsonValue root = parser.parse();
+        if (!root.isObject()) {
+            throw std::runtime_error("JSON: root is not an object");
+        }
+
         auto params = defaults();
 
-        auto qcEnabledPos = json.find("\"enabled\"");
-        if (qcEnabledPos != std::string::npos) {
-            auto val = extractDouble(json, "enabled", 1.0);
-            params.qcEnabled = (val > 0.5);
+        params.version = numInt(findMember(root.objectValue, "version"), params.version);
+
+        if (const JsonValue* pre = findMember(root.objectValue, "preprocess"); pre && pre->isObject()) {
+            const auto& preObj = pre->objectValue;
+
+            if (const JsonValue* dn = findMember(preObj, "denoise"); dn && dn->isObject()) {
+                params.preprocess.denoise.enable = boolean(findMember(dn->objectValue, "enable"), params.preprocess.denoise.enable);
+                params.preprocess.denoise.method = str(findMember(dn->objectValue, "method"), params.preprocess.denoise.method);
+                params.preprocess.denoise.kernel = numInt(findMember(dn->objectValue, "kernel"), params.preprocess.denoise.kernel);
+            }
+            if (const JsonValue* ct = findMember(preObj, "contrast"); ct && ct->isObject()) {
+                params.preprocess.contrast.enable = boolean(findMember(ct->objectValue, "enable"), params.preprocess.contrast.enable);
+                params.preprocess.contrast.method = str(findMember(ct->objectValue, "method"), params.preprocess.contrast.method);
+                params.preprocess.contrast.clip   = num(findMember(ct->objectValue, "clip"), params.preprocess.contrast.clip);
+            }
+            if (const JsonValue* sh = findMember(preObj, "sharpen"); sh && sh->isObject()) {
+                params.preprocess.sharpen.enable = boolean(findMember(sh->objectValue, "enable"), params.preprocess.sharpen.enable);
+                params.preprocess.sharpen.method = str(findMember(sh->objectValue, "method"), params.preprocess.sharpen.method);
+                params.preprocess.sharpen.sigma  = num(findMember(sh->objectValue, "sigma"), params.preprocess.sharpen.sigma);
+            }
         }
 
-        params.laplacianThreshold = extractDouble(json, "laplacian_threshold", params.laplacianThreshold);
-        params.overexposureHigh   = extractInt(json, "overexposure_high", params.overexposureHigh);
-        params.underexposureLow   = extractInt(json, "underexposure_low", params.underexposureLow);
+        if (const JsonValue* alg = findMember(root.objectValue, "algorithms"); alg && alg->isObject()) {
+            const auto& algObj = alg->objectValue;
 
-        auto missPos = json.find("\"miss_rate_max\"");
-        if (missPos != std::string::npos) {
-            params.missRateMax = extractDouble(json, "miss_rate_max", params.missRateMax);
+            if (const JsonValue* v = findMember(algObj, "crazing"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::Crazing]);
+            if (const JsonValue* v = findMember(algObj, "inclusion"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::Inclusion]);
+            if (const JsonValue* v = findMember(algObj, "patches"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::Patches]);
+            if (const JsonValue* v = findMember(algObj, "pitted_surface"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::PittedSurface]);
+            if (const JsonValue* v = findMember(algObj, "scratches"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::Scratches]);
+            if (const JsonValue* v = findMember(algObj, "rolled_in_scale"); v && v->isObject())
+                parseAlgorithm(v->objectValue, params.algorithms[model::DefectClass::RolledInScale]);
         }
-        auto overPos = json.find("\"overkill_rate_max\"");
-        if (overPos != std::string::npos) {
-            params.overkillRateMax = extractDouble(json, "overkill_rate_max", params.overkillRateMax);
+
+        if (const JsonValue* dec = findMember(root.objectValue, "decision"); dec && dec->isObject()) {
+            params.decision.mode          = str(findMember(dec->objectValue, "mode"), params.decision.mode);
+            params.decision.minConfidence = num(findMember(dec->objectValue, "min_confidence"), params.decision.minConfidence);
         }
-        params.timeoutPerImageMs = extractInt(json, "timeout_per_image_ms", params.timeoutPerImageMs);
+
+        if (const JsonValue* gate = findMember(root.objectValue, "gate"); gate && gate->isObject()) {
+            params.gate.timeoutPerImageMs = numInt(findMember(gate->objectValue, "timeout_per_image_ms"), params.gate.timeoutPerImageMs);
+            params.gate.parallelThreads   = numInt(findMember(gate->objectValue, "parallel_threads"), params.gate.parallelThreads);
+        }
 
         LogManager::instance().info("Config loaded from: " + configPath);
         return params;
@@ -123,5 +367,5 @@ std::optional<model::PipelineParams> ConfigManager::loadFromFile(const std::stri
     }
 }
 
-}
-}
+}  // namespace application
+}  // namespace qf
