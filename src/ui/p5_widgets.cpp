@@ -290,7 +290,7 @@ void ImagePreview::paintEvent(QPaintEvent*) {
 
     if (pixmap_.isNull()) {
         p.setPen(QColor(p5::kGray));
-        p.drawText(rect(), Qt::AlignCenter, tr("NO IMAGE"));
+        p.drawText(rect(), Qt::AlignCenter, tr("无图像"));
         return;
     }
 

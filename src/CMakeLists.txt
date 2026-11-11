@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui LinguistTools)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
 find_package(Threads REQUIRED)
 
 # ---- Core Model Library (header-only) ----
@@ -87,16 +87,4 @@ target_link_libraries(DefectX PRIVATE
     qtest_algorithm
     qtest_model
     Qt6::Widgets
-)
-
-qt6_add_translations(DefectX
-    TS_FILES
-        ${CMAKE_CURRENT_SOURCE_DIR}/ui/lang/qtest_zh_CN.ts
-    QM_FILES_OUTPUT_VARIABLE qm_files
-)
-
-add_custom_command(TARGET DefectX POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:DefectX>/lang"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${qm_files} "$<TARGET_FILE_DIR:DefectX>/lang"
-    COMMENT "Copying .qm translation files to output/lang/"
 )

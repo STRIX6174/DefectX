@@ -25,6 +25,16 @@ ParallelClassifier::~ParallelClassifier() {
     shutdown();
 }
 
+// ============================================================
+// 六线程创立 configure：按类别数起 worker 线程（1~6，默认 6）。
+//   数学原理：每个 worker 是"生产者-消费者"模型里的消费者——条件变量
+//     startCv_ 唤醒后取走当前灰度图（浅拷贝，引用计数保活），算完写入
+//     results_[index]；generation_ 每次 classify 自增，作为"代际标签"
+//     丢弃慢线程的过期结果，doneCount_ 判定六类是否全部完成。
+//   选择原因：六类算法彼此独立、无数据依赖，天然可并行；"一类别一线程"
+//     直接映射六类、避免超订；std::thread + 条件变量比 std::async/线程池
+//     更可控（可精确 join/shutdown、无任务队列开销）。
+// ============================================================
 void ParallelClassifier::configure(int threadCount, const model::PipelineParams& params) {
     shutdown();
 
@@ -50,6 +60,11 @@ void ParallelClassifier::configure(int threadCount, const model::PipelineParams&
                                 std::to_string(threadCount) + " workers");
 }
 
+// ============================================================
+// workerLoop：单个类别工作线程的主循环（与 configure 的创立对应）。
+//   阻塞等待 startCv_ 唤醒 → 运行本类算法 → 代际一致时写回结果并通知
+//   doneCv_；stop_ 置位则退出，代际落后则丢弃结果。
+// ============================================================
 void ParallelClassifier::workerLoop(int index, model::DefectClass type,
                                     model::AlgorithmParams params) {
     int lastGen = 0;

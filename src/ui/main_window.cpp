@@ -196,13 +196,13 @@ void ThumbnailDelegate::paint(QPainter* painter,
     } else {
         painter->fillRect(imgArea, QColor("#1E1E24"));
         painter->setPen(QColor(p5::kGray));
-        painter->drawText(imgArea, Qt::AlignCenter, tr("NO IMG"));
+        painter->drawText(imgArea, Qt::AlignCenter, tr("无图"));
     }
 
     // 角标（斜切胶囊，底色 = 类别专属色）
     QString badgeText;
     if (failed) {
-        badgeText = tr("ERR");
+        badgeText = tr("错误");
     } else if (predIdx >= 0) {
         double conf = index.data(RoleConf).toDouble();
         badgeText = index.data(RolePredAbbr).toString() + " "
@@ -277,7 +277,7 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUi() {
-    setWindowTitle(tr("DefectX - Surface Defect Classification"));
+    setWindowTitle(tr("DefectX - 表面缺陷分类"));
     resize(1360, 880);
     setStyleSheet(p5StyleSheet());
 

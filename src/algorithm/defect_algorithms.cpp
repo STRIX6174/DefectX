@@ -41,11 +41,15 @@ double polygonArea(const std::vector<cv::Point>& pts) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// [Cr] Crazing — 龟裂：网状交错细裂纹
-// 度量值 M_c = 边缘像素占比（edge_density）。
-// 细密裂纹使 Canny 边缘像素密度显著高于平滑表面。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [Cr] Crazing — 龟裂（网状交错细裂纹）
+//   数学原理：M = 边缘像素密度 = countNonZero(Canny(gray)) / 总像素。
+//     Canny 用 Sobel 梯度幅值做双阈值 + 迟滞连接，得到强边缘二值图；
+//     龟裂的细密网状裂纹会显著抬高"边缘像素占比"。
+//   选择原因：龟裂最稳定、最廉价的特征就是边缘密度，对光照变化不敏感，
+//     无需灰度共生矩阵等纹理统计即可区分平滑/裂纹表面，
+//     契合"手写算子、无深度学习"的约束。
+// ============================================================
 model::DefectScore detectCrazing(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::Crazing;
@@ -66,11 +70,15 @@ model::DefectScore detectCrazing(const cv::Mat& gray, const model::AlgorithmPara
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// [In] Inclusion — 夹杂：异质斑点/不规则暗色区域
-// 度量值 M_c = 异常区域面积占比（area_ratio）。
-// 自适应阈值提取与邻域灰度差异明显的暗色区域，累计面积占比。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [In] Inclusion — 夹杂（异质斑点/不规则暗色区域）
+//   数学原理：M = 异常区域面积占比 = Σ polygonArea(轮廓) / 总像素。
+//     adaptiveThreshold 以"局部高斯加权均值 − C"为阈值，THRESH_BINARY_INV
+//     提取比邻域明显更暗的斑点；轮廓面积用手写 shoelace（鞋带）公式累加。
+//   选择原因：夹杂是"与周围灰度反差大的暗色团块"，局部自适应阈值能抗
+//     光照不均；手写多边形面积可避免 OpenCV5 把 contourArea 移入 geometry
+//     模块带来的依赖，守住"仅 imgproc 算子"边界。
+// ============================================================
 model::DefectScore detectInclusion(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::Inclusion;
@@ -100,11 +108,14 @@ model::DefectScore detectInclusion(const cv::Mat& gray, const model::AlgorithmPa
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// [Pa] Patches — 斑块：成片异常纹理，灰度差异
-// 度量值 M_c = 局部灰度方差（local_variance，取整图均值）。
-// 斑块区域灰度波动大，局部方差显著高于均匀表面。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [Pa] Patches — 斑块（成片异常纹理）
+//   数学原理：M = 局部灰度方差 = E[X²] − E[X]²（二阶中心矩估计）。
+//     用盒式均值滤波分别对 X 与 X² 求局部均值再相减，得方差图后取全图
+//     均值；等价于滑动窗口内的方差统计。
+//   选择原因：斑块区域灰度波动大，方差是"纹理起伏"最直接的度量；
+//     box blur 近似积分图，复杂度低，且对旋转/尺度不敏感。
+// ============================================================
 model::DefectScore detectPatches(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::Patches;
@@ -132,11 +143,14 @@ model::DefectScore detectPatches(const cv::Mat& gray, const model::AlgorithmPara
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// [PS] Pitted Surface — 麻面：密集点状凹陷
-// 度量值 M_c = 顶帽暗点数量（blob_count）。
-// 顶帽变换提取比结构元素更小的亮/暗细节，统计尺寸合理的小斑点数量。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [PS] Pitted Surface — 麻面（密集点状凹陷）
+//   数学原理：M = 顶帽斑点数量。形态学顶帽 = 原图 − 开运算(原图)，
+//     用椭圆结构元素提取"比 SE 更小"的亮/暗细节；阈值化后统计面积
+//     落在 [3, 200] 的小轮廓个数。
+//   选择原因：麻面是大量微小坑点，顶帽变换专门分离小尺度特征；
+//     统计"合理尺寸斑点计数"比面积占比更贴合麻面的密集点状形态。
+// ============================================================
 model::DefectScore detectPittedSurface(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::PittedSurface;
@@ -168,11 +182,14 @@ model::DefectScore detectPittedSurface(const cv::Mat& gray, const model::Algorit
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// [Sc] Scratches — 划痕：细长线状痕迹，多方向
-// 度量值 M_c = 长线段总长（line_length）。
-// Canny + 概率霍夫直线提取，过滤长宽比过低线段后累加长度。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [Sc] Scratches — 划痕（细长线状痕迹，多方向）
+//   数学原理：M = 长线段总长。Canny 提取边缘后，用概率霍夫变换
+//     HoughLinesP 在参数空间 (ρ, θ) 投票拟合直线段；过滤长宽比过低的
+//     线段后，对满足条件的线段做 Σ√(dx²+dy²) 长度累加。
+//   选择原因：划痕本质是细长直线结构，霍夫直线是直接建模线结构的经典
+//     方法；累加长度对方向鲁棒，比 blob 面积更能刻画划痕严重程度。
+// ============================================================
 model::DefectScore detectScratches(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::Scratches;
@@ -205,11 +222,14 @@ model::DefectScore detectScratches(const cv::Mat& gray, const model::AlgorithmPa
     return s;
 }
 
-// ---------------------------------------------------------------------------
-// [RS] Rolled-in Scale — 轧入氧化铁皮：片状/条带状不规则纹理
-// 度量值 M_c = 纹理密度（texture_density）。
-// 自适应阈值提取与邻域灰度差异明显的纹理，形态学闭合后统计前景占比。
-// ---------------------------------------------------------------------------
+// ============================================================
+// [RS] Rolled-in Scale — 轧入氧化铁皮（片状/条带状不规则纹理）
+//   数学原理：M = 纹理密度 = 前景像素 / 总像素。
+//     adaptiveThreshold（高斯、THRESH_BINARY）提取与邻域灰度差异明显的
+//     纹理，形态学闭运算（先膨胀后腐蚀）连接断裂片段，再统计前景占比。
+//   选择原因：氧化铁皮呈大片不规则纹理，局部阈值 + 闭运算能把碎片连成
+//     整体；前景占比作为纹理密度，计算简单且能反映缺陷覆盖范围。
+// ============================================================
 model::DefectScore detectRolledInScale(const cv::Mat& gray, const model::AlgorithmParams& p) {
     model::DefectScore s;
     s.defectClass = model::DefectClass::RolledInScale;

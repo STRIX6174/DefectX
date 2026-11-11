@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C%2B%2B-17-blue.svg)]()
 [![Qt](https://img.shields.io/badge/Qt-6-green.svg)]()
-[![OpenCV](https://img.shields.io/badge/OpenCV-required-brightgreen.svg)]()
+[![OpenCV](https://img.shields.io/badge/OpenCV-brightgreen.svg)]()
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## English
 
-DefectX is a cross-platform industrial surface defect inspection tool built with C++/Qt/OpenCV. It performs automated quality control (QC) and visual defect detection on metal surfaces, supporting 6 defect types with configurable detection pipelines and detailed reporting.
+DefectX is a cross-platform industrial surface defect inspection tool built with C++17 / Qt 6 / OpenCV. It performs automated visual defect detection on metal surfaces, supporting 6 defect types with parallel classification, per-class confidence visualization and run statistics.
 
 ### Supported Defect Types
 
@@ -32,18 +32,30 @@ DefectX is a cross-platform industrial surface defect inspection tool built with
 
 ### Features
 
-- Automated batch image processing with pipeline runner
-- Configurable QC operators (Laplacian sharpness, over/under-exposure detection)
-- Ground-truth comparison and report generation
-- Progress tracking with cancel support
-- Marked defect image output
-- Bilingual UI (Chinese / English)
+- Batch pipeline: scan folder → load → preprocess → 6-way parallel classification → result fusion
+- Six-thread parallel classification — one worker per defect class, producer-consumer model with a generation guard against stale results
+- Classic CV operators (Canny edges, adaptive threshold, morphology, Hough lines) — no deep learning
+- Preprocessing chain: grayscale → resize → optional denoise / contrast / sharpen
+- Per-class confidence score bars + click-to-filter legend (single-class view)
+- Progress tracking with cancel support and per-image timeout
+- Run statistics in the status bar (total / success / failed / avg / P95 latency)
+- CSV / JSON report generator and JSON parameter loader
+
+### Architecture
+
+| Layer | Directory | Responsibility |
+|-------|-----------|----------------|
+| model | `src/model` | Header-only data types (scores, params, reports) |
+| algorithm | `src/algorithm` | Preprocessing, six defect detectors, result fusion (no Qt) |
+| application | `src/application` | Pipeline runner, parallel classifier, image loader, config, report (no Qt) |
+| ui | `src/ui` | Qt 6 Widgets GUI (P5-styled custom widgets) |
 
 ### Tech Stack
 
 - **Language:** C++17
-- **GUI:** Qt 6 (Widgets)
+- **GUI:** Qt 6 (Widgets, Core, Gui — LGPLv3)
 - **Vision:** OpenCV (core, imgproc, imgcodecs)
+- **Concurrency:** std::thread + condition variables
 - **Build:** CMake 3.16+
 
 ### Build
@@ -61,10 +73,11 @@ ninja
 ./DefectX
 ```
 
-1. Load your image folder
-2. (Optional) Load a ground-truth CSV for accuracy comparison
-3. Configure QC & defect parameters in `Gate` panel
-4. Click **Run** and view results in the result list
+1. Click **Select Folder** to load an image directory
+2. Click **Run** to start batch detection; **Stop** cancels at any time
+3. Browse thumbnails in the result grid; click an image to view its six-class confidence bars
+4. Click a legend chip to filter results by a single defect class
+5. View run statistics (total / success / failed / avg / P95) in the status bar
 
 ---
 
@@ -72,33 +85,45 @@ ninja
 
 ## 中文
 
-DefectX 是一款基于 C++/Qt/OpenCV 的跨平台工业表面缺陷检测工具。可实现金属表面自动化质检与视觉缺陷识别，支持 6 种缺陷类型、可配置检测流程及详细报告输出。
+DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检测工具。支持 6 种缺陷类型的并行分类、逐类置信度可视化与运行统计。
 
 ### 支持缺陷类型
 
 | 缩写 | 类型 | 说明 |
 |:----:|------|------|
-| Cr | 裂纹 (Crazing) | 表面网状裂纹 |
+| Cr | 龟裂 (Crazing) | 表面网状裂纹 |
 | In | 夹杂物 (Inclusion) | 非金属异物 |
 | Pa | 斑块 (Patches) | 不规则色斑 |
-| PS | 麻点 (Pitted Surface) | 细小表面凹坑 |
+| PS | 麻面 (Pitted Surface) | 细小表面凹坑 |
 | Sc | 划痕 (Scratches) | 线状机械损伤 |
 | RS | 轧入氧化皮 (Rolled-in Scale) | 氧化铁皮压入 |
 
 ### 功能特性
 
-- 批量图像自动检测流水线
-- 可配置 QC 算子（Laplacian 锐度、过曝/欠曝检测）
-- Ground-Truth 对比与报告生成
-- 进度回调与随时取消
-- 缺陷标记图像输出
-- 中英双语界面
+- 批量检测流水线：扫描文件夹 → 加载 → 预处理 → 六类并行识别 → 结果融合
+- 六线程并行分类 —— 每类一线程，生产者-消费者模型 + 代际标签防过期结果
+- 经典 CV 算子（Canny 边缘、自适应阈值、形态学、霍夫直线），无深度学习
+- 预处理链路：灰度化 → 尺寸标准化 → 可选去噪 / 对比度 / 锐化
+- 六类置信度得分条 + 图例点击「只看某类」
+- 进度回调 + 随时取消 + 单图超时保护
+- 状态栏运行统计（总数 / 成功 / 失败 / 平均 / P95 耗时）
+- 内置 CSV / JSON 报告生成器与 JSON 参数加载器
+
+### 架构
+
+| 层 | 目录 | 职责 |
+|----|------|------|
+| model | `src/model` | 纯头文件数据类型（得分、参数、报告） |
+| algorithm | `src/algorithm` | 预处理、六类检测算子、结果融合（不依赖 Qt） |
+| application | `src/application` | 流水线执行、并行分类器、图像加载、配置、报告（不依赖 Qt） |
+| ui | `src/ui` | Qt 6 Widgets 界面（P5 风格自绘控件） |
 
 ### 技术栈
 
 - **语言:** C++17
-- **界面:** Qt 6 (Widgets)
-- **视觉:** OpenCV
+- **界面:** Qt 6 (Widgets, Core, Gui — LGPLv3)
+- **视觉:** OpenCV (core, imgproc, imgcodecs)
+- **并发:** std::thread + 条件变量
 - **构建:** CMake 3.16+
 
 ### 构建
@@ -116,10 +141,11 @@ ninja
 ./DefectX
 ```
 
-1. 加载图像文件夹
-2. （可选）加载 Ground-Truth CSV 做准确率对比
-3. 在 `Gate` 面板调整 QC 与缺陷参数
-4. 点击 **运行**，在结果列表中查看检测结果
+1. 点击「选择文件夹」加载图片目录
+2. 点击「启动」开始批量检测，可随时「中止」
+3. 在结果网格浏览缩略图，点击某张查看六类置信度得分条
+4. 点击图例标签筛选「只看某类」
+5. 在状态栏查看运行统计（总数 / 成功 / 失败 / 平均 / P95 耗时）
 
 ---
 
