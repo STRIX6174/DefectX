@@ -12,8 +12,11 @@ void ResultAggregator::addSuccess(const model::ImageEntry& img,
     cycleTimes_.push_back(result.cycleTimeMs);
 
     model::ImageDetail detail;
-    detail.fileName = std::filesystem::path(img.filePath).filename().string();
-    detail.result   = result;
+    detail.fileName    = std::filesystem::path(img.filePath).filename().string();
+    detail.filePath    = img.filePath;
+    detail.relPath     = img.relPath;
+    detail.contentHash = img.contentHash;
+    detail.result      = result;
     details_.push_back(std::move(detail));
 }
 
@@ -22,6 +25,8 @@ void ResultAggregator::addError(const model::ImageEntry& img) {
 
     model::ErrorDetail ed;
     ed.fileName  = std::filesystem::path(img.filePath).filename().string();
+    ed.filePath  = img.filePath;
+    ed.relPath   = img.relPath;
     ed.errorCode = img.errorCode;
     errors_.push_back(std::move(ed));
 }

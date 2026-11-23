@@ -1,17 +1,20 @@
 #include "application/pipeline_runner.h"
 #include "application/log_manager.h"
 #include "application/result_aggregator.h"
-#include "application/report_generator.h"
 
 #include "algorithm/preprocess_operators.h"
 #include "algorithm/defect_algorithms.h"
 #include "algorithm/result_fusion.h"
+#include "infrastructure/comm/modbus_rtu_transmitter.h"
+#include "infrastructure/comm/modbus_tcp_transmitter.h"
 #include "model/defect_class.h"
 
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
 #include <cctype>
+#include <memory>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -146,6 +149,7 @@ PipelineRunner::PipelineRunner()
     : cancelToken_(std::make_shared<CancelToken>()) {}
 
 PipelineRunner::~PipelineRunner() {
+    closeCommChannel();
     classifier_.shutdown();
 }
 
@@ -164,6 +168,61 @@ void PipelineRunner::setConfig(const model::PipelineParams& params) {
     }
     params_ = params;
     classifier_.configure(params.gate.parallelThreads, params_);
+    rebuildTransmitter();
+}
+
+void PipelineRunner::rebuildTransmitter() {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (transmitter_ && transmitter_->isOpen()) {
+        transmitter_->close();
+    }
+    if (params_.infrastructure.comm.transport == "rtu") {
+        transmitter_ = std::make_unique<infrastructure::ModbusRtuTransmitter>();
+    } else {
+        transmitter_ = std::make_unique<infrastructure::ModbusTcpTransmitter>();
+    }
+}
+
+infrastructure::TransmitterStatus PipelineRunner::commStatus() const {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (!transmitter_) return infrastructure::TransmitterStatus{};
+    return transmitter_->status();
+}
+
+infrastructure::RegisterImage PipelineRunner::commRegisterImage() const {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (!transmitter_) return infrastructure::RegisterImage{};
+    return transmitter_->registerImage();
+}
+
+std::vector<std::string> PipelineRunner::takeCommLog() {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (!transmitter_) return {};
+    return transmitter_->takeLog();
+}
+
+bool PipelineRunner::isCommChannelOpen() const {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    return transmitter_ && transmitter_->isOpen();
+}
+
+bool PipelineRunner::testCommChannel(std::string& error) {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (!transmitter_) {
+        error = "通讯通道未创建";
+        return false;
+    }
+    if (transmitter_->isOpen()) return true;
+    if (!transmitter_->open(params_.infrastructure.comm)) {
+        error = transmitter_->status().lastError;
+        return false;
+    }
+    return true;
+}
+
+void PipelineRunner::closeCommChannel() {
+    std::lock_guard<std::mutex> lk(commMtx_);
+    if (transmitter_) transmitter_->close();
 }
 
 void PipelineRunner::setImageFolder(const std::string& folderPath) {
@@ -222,7 +281,43 @@ void PipelineRunner::run() {
     running_ = true;
     cancelToken_->reset();
 
+    const auto& infra = params_.infrastructure;
+
+    std::unique_ptr<infrastructure::GroundTruthProvider> groundTruth;
+    if (infra.validation.enable) {
+        groundTruth = std::make_unique<infrastructure::FolderNameGroundTruth>();
+    }
+
+    infrastructure::MetricCalculator metricCalculator;
     ResultAggregator aggregator;
+
+    // ---- 存储（旁路能力：打开失败只记日志，不中断识别）----
+    bool storeEnabled = false;
+    int64_t runId = -1;
+    if (infra.database.enable) {
+        if (store_.open(infra.database.path)) {
+            ConfigManager configManager;
+            const std::string mode = infra.validation.enable ? "validation" : "inference";
+            runId = store_.beginRun(mode, configManager.toJsonString(params_));
+            storeEnabled = (runId > 0);
+            if (!storeEnabled) {
+                LogManager::instance().error("ResultStore beginRun failed: " + store_.lastError());
+            }
+        } else {
+            LogManager::instance().error("ResultStore open failed: " + store_.lastError());
+        }
+    }
+    bool storeFailureLogged = false;
+
+    // ---- 通讯从站（可选）：整批跑完后写入寄存器镜像，由主站轮询读取 ----
+    if (infra.comm.enable) {
+        if (!transmitter_) rebuildTransmitter();
+        std::lock_guard<std::mutex> lk(commMtx_);
+        if (transmitter_ && !transmitter_->open(infra.comm)) {
+            LogManager::instance().warn(
+                "Comm channel open failed: " + transmitter_->status().lastError);
+        }
+    }
 
     auto files = scanImageFiles(imageFolder_);
     int total = static_cast<int>(files.size());
@@ -233,18 +328,37 @@ void PipelineRunner::run() {
         }
 
         const auto& filePath = files[i];
+        const std::string relPath = ImageLoader::relativePath(filePath, imageFolder_);
+        const std::string contentHash = imageLoader_.computeMd5(filePath);
 
         auto [img, err] = imageLoader_.load(filePath);
         if (img.empty()) {
             model::ImageEntry entry = imageLoader_.buildEntry(filePath, img);
+            entry.relPath     = relPath;
+            entry.contentHash = contentHash;
             entry.status = model::ImageStatus::LoadFailed;
             entry.errorCode = (err != model::ErrorCode::None) ? err : model::ErrorCode::DecodeFailed;
             if (progressCb_) progressCb_->onError(entry, entry.errorCode);
             aggregator.addError(entry);
+
+            if (storeEnabled) {
+                model::ErrorDetail detail;
+                detail.fileName  = std::filesystem::path(filePath).filename().string();
+                detail.filePath  = filePath;
+                detail.relPath   = relPath;
+                detail.errorCode = entry.errorCode;
+                if (!store_.addMeasurementError(runId, detail) && !storeFailureLogged) {
+                    LogManager::instance().warn(
+                        "ResultStore addMeasurementError failed: " + store_.lastError());
+                    storeFailureLogged = true;
+                }
+            }
             continue;
         }
 
         model::ImageEntry entry = imageLoader_.buildEntry(filePath, img);
+        entry.relPath     = relPath;
+        entry.contentHash = contentHash;
         entry.status = model::ImageStatus::Processing;
 
         auto t0 = std::chrono::steady_clock::now();
@@ -256,6 +370,24 @@ void PipelineRunner::run() {
         entry.status = model::ImageStatus::Classified;
         aggregator.addSuccess(entry, result);
 
+        std::optional<model::DefectClass> truth =
+            groundTruth ? groundTruth->lookup(filePath) : std::nullopt;
+        metricCalculator.accumulate(truth, result.predicted);
+
+        if (storeEnabled) {
+            model::ImageDetail detail;
+            detail.fileName    = std::filesystem::path(filePath).filename().string();
+            detail.filePath    = filePath;
+            detail.relPath     = relPath;
+            detail.contentHash = contentHash;
+            detail.result      = result;
+            if (!store_.addMeasurement(runId, detail, truth) && !storeFailureLogged) {
+                LogManager::instance().warn(
+                    "ResultStore addMeasurement failed: " + store_.lastError());
+                storeFailureLogged = true;
+            }
+        }
+
         if (progressCb_) {
             progressCb_->onImageDone(i + 1, total, entry, result);
         }
@@ -264,6 +396,26 @@ void PipelineRunner::run() {
     bool isPartial = cancelToken_->isCancelled();
 
     lastReport_ = aggregator.finalize(isPartial);
+    lastMetrics_ = metricCalculator.finalize();
+
+    if (storeEnabled) {
+        if (infra.validation.enable && !store_.saveMetrics(runId, lastMetrics_)) {
+            LogManager::instance().error("ResultStore saveMetrics failed: " + store_.lastError());
+        }
+        if (!store_.finishRun(runId, lastReport_)) {
+            LogManager::instance().error("ResultStore finishRun failed: " + store_.lastError());
+        }
+        store_.close();
+    }
+
+    if (infra.comm.enable) {
+        std::lock_guard<std::mutex> lk(commMtx_);
+        if (transmitter_ && transmitter_->isOpen()) {
+            transmitter_->publish(lastReport_, lastMetrics_);
+            // 保持从站监听：publish 只更新寄存器镜像，主站随后轮询读取；
+            // 立即 close 会让主站连接被拒，通道由 closeCommChannel()/析构关闭。
+        }
+    }
 
     LogManager::instance().info("Pipeline finished: " +
                                 std::to_string(lastReport_.successCount) + " ok, " +

@@ -8,6 +8,11 @@
 #include "model/run_report.h"
 #include "model/classification_result.h"
 #include "model/defect_score.h"
+#include "model/validation_metrics.h"
+#include "infrastructure/ground_truth.h"
+#include "infrastructure/metric_calculator.h"
+#include "infrastructure/result_store.h"
+#include "infrastructure/comm/i_result_transmitter.h"
 
 #include <opencv2/core.hpp>
 
@@ -64,11 +69,23 @@ public:
     void run();
 
     const model::RunReport& lastReport() const { return lastReport_; }
+    const model::RunMetrics& lastMetrics() const { return lastMetrics_; }
     CancelTokenPtr cancelToken() const { return cancelToken_; }
+    const model::PipelineParams& params() const { return params_; }
+
+    // ---- 职责2（CommPanel）只读查询：拉取式，线程安全 ----
+    infrastructure::TransmitterStatus commStatus() const;
+    infrastructure::RegisterImage commRegisterImage() const;
+    std::vector<std::string> takeCommLog();
+    bool isCommChannelOpen() const;
+    // 诊断「测试监听」：按当前配置尝试打开从站通道。
+    bool testCommChannel(std::string& error);
+    void closeCommChannel();
 
 private:
     std::vector<std::string> scanImageFiles(const std::string& folder);
     model::ClassificationResult processSingleImage(const cv::Mat& img);
+    void rebuildTransmitter();
 
     std::shared_ptr<RunProgressCallback> progressCb_;
     CancelTokenPtr cancelToken_;
@@ -80,6 +97,11 @@ private:
     ParallelClassifier classifier_;
 
     model::RunReport lastReport_;
+    model::RunMetrics lastMetrics_;
+
+    infrastructure::ResultStore store_;
+    std::unique_ptr<infrastructure::IResultTransmitter> transmitter_;
+    mutable std::mutex commMtx_;
 
     std::atomic<bool> running_{false};
 };

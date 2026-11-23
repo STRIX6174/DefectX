@@ -235,9 +235,61 @@ void parseAlgorithm(const JsonObject& obj, model::AlgorithmParams& p) {
     p.metric       = str(findMember(obj, "metric"), p.metric);
 }
 
+// ---------------------------------------------------------------------------
+// JSON 序列化辅助（与上面的轻量解析器对称）
+// ---------------------------------------------------------------------------
+std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 2);
+    for (char c : s) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
+std::string jstr(const std::string& s) {
+    return "\"" + jsonEscape(s) + "\"";
+}
+
+std::string jnum(double v) {
+    std::ostringstream ss;
+    ss.precision(15);
+    ss << v;
+    return ss.str();
+}
+
+std::string jbool(bool v) {
+    return v ? "true" : "false";
+}
+
+void writeAlgorithm(std::ostringstream& ss, const char* key,
+                    const model::AlgorithmParams& p) {
+    ss << "      \"" << key << "\": {\n"
+       << "        \"metric\": " << jstr(p.metric) << ",\n"
+       << "        \"threshold\": " << jnum(p.threshold) << ",\n"
+       << "        \"canny_low\": " << p.cannyLow << ",\n"
+       << "        \"canny_high\": " << p.cannyHigh << ",\n"
+       << "        \"block_size\": " << p.blockSize << ",\n"
+       << "        \"c_value\": " << p.cValue << ",\n"
+       << "        \"hist_diff\": " << jnum(p.histDiff) << ",\n"
+       << "        \"tophat_kernel\": " << p.tophatKernel << ",\n"
+       << "        \"blob_count_min\": " << p.blobCountMin << ",\n"
+       << "        \"close_kernel\": " << p.closeKernel << ",\n"
+       << "        \"aspect_ratio\": " << jnum(p.aspectRatio) << ",\n"
+       << "        \"min_length\": " << p.minLength << "\n"
+       << "      }";
+}
+
 }  // anonymous namespace
 
-model::PipelineParams ConfigManager::defaults() {
+model::PipelineParams ConfigManager::defaults() const {
     model::PipelineParams p;
     p.version = 3;
 
@@ -299,6 +351,113 @@ model::PipelineParams ConfigManager::defaults() {
     return p;
 }
 
+std::string ConfigManager::toJsonString(const model::PipelineParams& params) const {
+    const auto fallbackAlgorithms = defaults().algorithms;
+
+    std::ostringstream ss;
+    ss << "{\n"
+       << "  \"version\": " << params.version << ",\n"
+       << "  \"input_dir\": " << jstr(params.inputDir) << ",\n";
+
+    ss << "  \"preprocess\": {\n";
+    ss << "    \"denoise\": {\n"
+       << "      \"enable\": " << jbool(params.preprocess.denoise.enable) << ",\n"
+       << "      \"method\": " << jstr(params.preprocess.denoise.method) << ",\n"
+       << "      \"kernel\": " << params.preprocess.denoise.kernel << "\n"
+       << "    },\n";
+    ss << "    \"contrast\": {\n"
+       << "      \"enable\": " << jbool(params.preprocess.contrast.enable) << ",\n"
+       << "      \"method\": " << jstr(params.preprocess.contrast.method) << ",\n"
+       << "      \"clip\": " << jnum(params.preprocess.contrast.clip) << "\n"
+       << "    },\n";
+    ss << "    \"sharpen\": {\n"
+       << "      \"enable\": " << jbool(params.preprocess.sharpen.enable) << ",\n"
+       << "      \"method\": " << jstr(params.preprocess.sharpen.method) << ",\n"
+       << "      \"sigma\": " << jnum(params.preprocess.sharpen.sigma) << "\n"
+       << "    }\n"
+       << "  },\n";
+
+    ss << "  \"algorithms\": {\n";
+    struct ClassKey { model::DefectClass cls; const char* key; };
+    const ClassKey classKeys[] = {
+        {model::DefectClass::Crazing,       "crazing"},
+        {model::DefectClass::Inclusion,     "inclusion"},
+        {model::DefectClass::Patches,       "patches"},
+        {model::DefectClass::PittedSurface, "pitted_surface"},
+        {model::DefectClass::Scratches,     "scratches"},
+        {model::DefectClass::RolledInScale, "rolled_in_scale"},
+    };
+    bool firstAlg = true;
+    for (const auto& ck : classKeys) {
+        auto it = params.algorithms.find(ck.cls);
+        const model::AlgorithmParams& ap =
+            (it != params.algorithms.end()) ? it->second : fallbackAlgorithms.at(ck.cls);
+        if (!firstAlg) ss << ",\n";
+        firstAlg = false;
+        writeAlgorithm(ss, ck.key, ap);
+    }
+    ss << "\n  },\n";
+
+    ss << "  \"decision\": {\n"
+       << "    \"mode\": " << jstr(params.decision.mode) << ",\n"
+       << "    \"min_confidence\": " << jnum(params.decision.minConfidence) << "\n"
+       << "  },\n";
+
+    ss << "  \"gate\": {\n"
+       << "    \"timeout_per_image_ms\": " << params.gate.timeoutPerImageMs << ",\n"
+       << "    \"parallel_threads\": " << params.gate.parallelThreads << "\n"
+       << "  },\n";
+
+    const auto& infra = params.infrastructure;
+    ss << "  \"infrastructure\": {\n"
+       << "    \"database\": {\n"
+       << "      \"enable\": " << jbool(infra.database.enable) << ",\n"
+       << "      \"path\": " << jstr(infra.database.path) << "\n"
+       << "    },\n"
+       << "    \"validation\": {\n"
+       << "      \"enable\": " << jbool(infra.validation.enable) << "\n"
+       << "    },\n"
+       << "    \"comm\": {\n"
+       << "      \"enable\": " << jbool(infra.comm.enable) << ",\n"
+       << "      \"transport\": " << jstr(infra.comm.transport) << ",\n"
+       << "      \"send_class_breakdown\": " << jbool(infra.comm.sendClassBreakdown) << ",\n"
+       << "      \"tcp\": {\n"
+       << "        \"port\": " << infra.comm.tcp.port << ",\n"
+       << "        \"unit_id\": " << infra.comm.tcp.unitId << "\n"
+       << "      },\n"
+       << "      \"rtu\": {\n"
+       << "        \"port\": " << jstr(infra.comm.rtu.port) << ",\n"
+       << "        \"baud\": " << infra.comm.rtu.baud << ",\n"
+       << "        \"slave_id\": " << infra.comm.rtu.slaveId << "\n"
+       << "      }\n"
+       << "    }\n"
+       << "  }\n"
+       << "}\n";
+
+    return ss.str();
+}
+
+bool ConfigManager::saveToFile(const std::string& configPath,
+                               const model::PipelineParams& params) {
+    try {
+        std::ofstream out(configPath, std::ios::trunc);
+        if (!out.is_open()) {
+            LogManager::instance().error("Config save failed: cannot open " + configPath);
+            return false;
+        }
+        out << toJsonString(params);
+        if (!out.good()) {
+            LogManager::instance().error("Config save failed: write error " + configPath);
+            return false;
+        }
+        LogManager::instance().info("Config saved to: " + configPath);
+        return true;
+    } catch (const std::exception& e) {
+        LogManager::instance().error(std::string("Config save failed: ") + e.what());
+        return false;
+    }
+}
+
 std::optional<model::PipelineParams> ConfigManager::loadFromFile(const std::string& configPath) {
     try {
         auto text = readFile(configPath);
@@ -357,6 +516,36 @@ std::optional<model::PipelineParams> ConfigManager::loadFromFile(const std::stri
         if (const JsonValue* gate = findMember(root.objectValue, "gate"); gate && gate->isObject()) {
             params.gate.timeoutPerImageMs = numInt(findMember(gate->objectValue, "timeout_per_image_ms"), params.gate.timeoutPerImageMs);
             params.gate.parallelThreads   = numInt(findMember(gate->objectValue, "parallel_threads"), params.gate.parallelThreads);
+        }
+
+        params.inputDir = str(findMember(root.objectValue, "input_dir"), params.inputDir);
+
+        if (const JsonValue* out = findMember(root.objectValue, "infrastructure"); out && out->isObject()) {
+            const auto& outObj = out->objectValue;
+
+            if (const JsonValue* db = findMember(outObj, "database"); db && db->isObject()) {
+                params.infrastructure.database.enable = boolean(findMember(db->objectValue, "enable"), params.infrastructure.database.enable);
+                params.infrastructure.database.path   = str(findMember(db->objectValue, "path"), params.infrastructure.database.path);
+            }
+            if (const JsonValue* val = findMember(outObj, "validation"); val && val->isObject()) {
+                params.infrastructure.validation.enable = boolean(findMember(val->objectValue, "enable"), params.infrastructure.validation.enable);
+            }
+            if (const JsonValue* comm = findMember(outObj, "comm"); comm && comm->isObject()) {
+                const auto& commObj = comm->objectValue;
+                params.infrastructure.comm.enable             = boolean(findMember(commObj, "enable"), params.infrastructure.comm.enable);
+                params.infrastructure.comm.transport          = str(findMember(commObj, "transport"), params.infrastructure.comm.transport);
+                params.infrastructure.comm.sendClassBreakdown = boolean(findMember(commObj, "send_class_breakdown"), params.infrastructure.comm.sendClassBreakdown);
+
+                if (const JsonValue* tcp = findMember(commObj, "tcp"); tcp && tcp->isObject()) {
+                    params.infrastructure.comm.tcp.port   = numInt(findMember(tcp->objectValue, "port"), params.infrastructure.comm.tcp.port);
+                    params.infrastructure.comm.tcp.unitId = numInt(findMember(tcp->objectValue, "unit_id"), params.infrastructure.comm.tcp.unitId);
+                }
+                if (const JsonValue* rtu = findMember(commObj, "rtu"); rtu && rtu->isObject()) {
+                    params.infrastructure.comm.rtu.port    = str(findMember(rtu->objectValue, "port"), params.infrastructure.comm.rtu.port);
+                    params.infrastructure.comm.rtu.baud    = numInt(findMember(rtu->objectValue, "baud"), params.infrastructure.comm.rtu.baud);
+                    params.infrastructure.comm.rtu.slaveId = numInt(findMember(rtu->objectValue, "slave_id"), params.infrastructure.comm.rtu.slaveId);
+                }
+            }
         }
 
         LogManager::instance().info("Config loaded from: " + configPath);

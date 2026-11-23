@@ -1,6 +1,9 @@
 #include "ui/main_window.h"
 #include "ui/p5_widgets.h"
 #include "ui/p5_theme.h"
+#include "ui/comm_panel.h"
+#include "ui/history_panel.h"
+#include "ui/config_panel.h"
 #include "application/config_manager.h"
 #include "application/log_manager.h"
 #include "model/defect_class.h"
@@ -15,6 +18,9 @@
 #include <QThread>
 #include <QPropertyAnimation>
 #include <QEasingCurve>
+#include <QDockWidget>
+#include <QTabWidget>
+#include <QMessageBox>
 
 #include <filesystem>
 #include <algorithm>
@@ -256,7 +262,9 @@ MainWindow::MainWindow(QWidget* parent)
     pipeline_->setCancelToken(std::make_shared<application::CancelToken>());
 
     application::ConfigManager cm;
-    pipeline_->setConfig(cm.defaults());
+    auto loaded = cm.loadFromFile(configPath_.toStdString());
+    params_ = loaded ? *loaded : cm.defaults();
+    pipeline_->setConfig(params_);
 
     setupUi();
 
@@ -269,6 +277,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    if (commPanel_) commPanel_->bindPipeline(nullptr);
     auto token = pipeline_->cancelToken();
     if (token) token->cancel();
     if (workerThread_.joinable()) {
@@ -291,6 +300,38 @@ void MainWindow::setupUi() {
 
     setCentralWidget(root);
     setupStatusBar();
+
+    // ---- 职责 2/3/4：三个面板装入 QDockWidget（可拖拽/浮动/隐藏）----
+    historyPanel_ = new HistoryPanel(this);
+    commPanel_    = new CommPanel(this);
+    configPanel_  = new ConfigPanel(this);
+
+    historyDock_ = new QDockWidget(tr("历史记录"), this);
+    historyDock_->setObjectName("historyDock");
+    historyDock_->setWidget(historyPanel_);
+    addDockWidget(Qt::LeftDockWidgetArea, historyDock_);
+
+    rightTabs_ = new QTabWidget(this);
+    rightTabs_->addTab(commPanel_, tr("通讯"));
+    rightTabs_->addTab(configPanel_, tr("配置"));
+    rightDock_ = new QDockWidget(tr("通讯 / 配置"), this);
+    rightDock_->setObjectName("commConfigDock");
+    rightDock_->setWidget(rightTabs_);
+    addDockWidget(Qt::RightDockWidgetArea, rightDock_);
+
+    commPanel_->bindPipeline(pipeline_.get());
+    commPanel_->setParams(params_);
+    historyPanel_->setDatabasePath(
+        QString::fromStdString(params_.infrastructure.database.path));
+    configPanel_->setParams(params_);
+    configPanel_->setConfigPath(configPath_);
+
+    connect(configPanel_, &ConfigPanel::saveRequested, this, &MainWindow::onConfigSave);
+    connect(configPanel_, &ConfigPanel::reloadRequested, this, &MainWindow::onConfigReload);
+    connect(commPanel_, &CommPanel::configEditRequested, this, [this]() {
+        rightTabs_->setCurrentWidget(configPanel_);
+        if (rightDock_) rightDock_->show();
+    });
 }
 
 QWidget* MainWindow::buildToolBar() {
@@ -442,11 +483,14 @@ void MainWindow::onSelectFolder() {
     folderLabel_->setText(folder);
     startBtn_->setEnabled(true);
     pipeline_->setImageFolder(selectedFolder_.toStdString());
+    params_.inputDir = selectedFolder_.toStdString();
+    if (configPanel_) configPanel_->setInputDir(folder);
 
     application::LogManager::instance().info("Selected folder: " + selectedFolder_.toStdString());
 }
 
 void MainWindow::onStart() {
+    runActive_ = true;
     setUiEnabled(false);
     gridModel_->clear();
     classCounts_.fill(0);
@@ -508,8 +552,12 @@ void MainWindow::onErrorOccurred(const model::ImageEntry& img, model::ErrorCode 
 }
 
 void MainWindow::onFinished(const model::RunReport& report) {
+    runActive_ = false;
     setUiEnabled(true);
     updateStatusBar(report);
+    if (historyPanel_ && params_.infrastructure.database.enable) {
+        historyPanel_->refresh();
+    }
     application::LogManager::instance().info("Pipeline finished, displayed in UI");
 }
 
@@ -588,6 +636,65 @@ void MainWindow::setUiEnabled(bool enabled) {
     selectBtn_->setEnabled(enabled);
     legend_->setEnabled(enabled);
     progressBar_->setVisible(!enabled);
+    if (configPanel_) configPanel_->setEnabled(enabled);
+}
+
+void MainWindow::onConfigSave(const model::PipelineParams& params, const QString& path) {
+    if (runActive_) {
+        QMessageBox::warning(this, tr("参数配置"),
+                             tr("运行中不能修改配置，请先中止或等待本次运行结束。"));
+        return;
+    }
+
+    application::ConfigManager cm;
+    if (!cm.saveToFile(path.toStdString(), params)) {
+        QMessageBox::warning(this, tr("参数配置"), tr("保存失败，详见 qtest.log。"));
+        return;
+    }
+
+    params_ = params;
+    configPath_ = path;
+    pipeline_->setConfig(params_);
+    commPanel_->setParams(params_);
+    historyPanel_->setDatabasePath(
+        QString::fromStdString(params_.infrastructure.database.path));
+
+    // 配置里首次填了输入目录时，顺带作为本次运行的数据源。
+    if (selectedFolder_.isEmpty() && !params_.inputDir.empty()) {
+        selectedFolder_ = QString::fromStdString(params_.inputDir);
+        folderLabel_->setText(selectedFolder_);
+        pipeline_->setImageFolder(params_.inputDir);
+        startBtn_->setEnabled(true);
+    }
+
+    application::LogManager::instance().info("Config applied from UI: " + path.toStdString());
+}
+
+void MainWindow::onConfigReload(const QString& path) {
+    if (runActive_) {
+        QMessageBox::warning(this, tr("参数配置"),
+                             tr("运行中不能重新载入配置，请先中止或等待本次运行结束。"));
+        return;
+    }
+
+    application::ConfigManager cm;
+    auto loaded = cm.loadFromFile(path.toStdString());
+    if (!loaded) {
+        QMessageBox::warning(this, tr("参数配置"),
+                             tr("载入失败：%1（详见 qtest.log）").arg(path));
+        return;
+    }
+
+    params_ = *loaded;
+    configPath_ = path;
+    pipeline_->setConfig(params_);
+    configPanel_->setParams(params_);
+    configPanel_->setConfigPath(path);
+    commPanel_->setParams(params_);
+    historyPanel_->setDatabasePath(
+        QString::fromStdString(params_.infrastructure.database.path));
+
+    application::LogManager::instance().info("Config reloaded from UI: " + path.toStdString());
 }
 
 }  // namespace ui

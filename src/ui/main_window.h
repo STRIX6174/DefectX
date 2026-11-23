@@ -16,8 +16,12 @@
 
 #include "application/pipeline_runner.h"
 #include "ui/run_bridge.h"
+#include "model/pipeline_params.h"
 #include "model/run_report.h"
 #include "model/classification_result.h"
+
+class QDockWidget;
+class QTabWidget;
 
 namespace qf {
 namespace ui {
@@ -26,6 +30,9 @@ class ChamferButton;
 class ScoreBar;
 class ClassLegend;
 class ImagePreview;
+class CommPanel;
+class HistoryPanel;
+class ConfigPanel;
 
 struct ResultItem {
     model::ImageEntry            entry;
@@ -97,6 +104,8 @@ private slots:
     void onFinished(const model::RunReport& report);
     void onGridClicked(const QModelIndex& index);
     void onFilterChanged();
+    void onConfigSave(const model::PipelineParams& params, const QString& path);
+    void onConfigReload(const QString& path);
 
 private:
     void setupUi();
@@ -138,6 +147,18 @@ private:
     std::thread workerThread_;
 
     QString selectedFolder_;
+
+    // 职责 2/3/4：三个面板（QDockWidget 承载）
+    CommPanel*    commPanel_    = nullptr;
+    HistoryPanel* historyPanel_ = nullptr;
+    ConfigPanel*  configPanel_  = nullptr;
+    QTabWidget*   rightTabs_    = nullptr;
+    QDockWidget*  rightDock_    = nullptr;
+    QDockWidget*  historyDock_  = nullptr;
+
+    model::PipelineParams params_;
+    QString configPath_ = "config.json";
+    bool runActive_ = false;
 };
 
 }  // namespace ui

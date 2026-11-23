@@ -13,8 +13,14 @@ namespace application {
 class ConfigManager {
 public:
     std::optional<model::PipelineParams> loadFromFile(const std::string& configPath);
-    model::PipelineParams defaults();
-};
+
+    // 覆盖写入 JSON 配置；失败返回 false。
+    bool saveToFile(const std::string& configPath, const model::PipelineParams& params);
+
+    // 内存结构 → JSON 文本（与 loadFromFile 对称，同时用作 runs.config_json 快照）。
+    std::string toJsonString(const model::PipelineParams& params) const;
+
+    model::PipelineParams defaults() const;};
 
 }  // namespace application
 }  // namespace qf

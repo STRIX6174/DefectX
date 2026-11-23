@@ -57,12 +57,48 @@ struct GateParams {
     int parallelThreads   = 6;
 };
 
+struct DatabaseConfig {
+    bool enable = false;
+    std::string path = "results.db";
+};
+
+struct ValidationConfig {
+    bool enable = false;
+};
+
+struct TcpCommConfig {
+    int port = 502;
+    int unitId = 1;
+};
+
+struct RtuCommConfig {
+    std::string port = "COM3";
+    int baud = 115200;
+    int slaveId = 1;
+};
+
+struct CommConfig {
+    bool enable = false;
+    std::string transport = "tcp";   // tcp / rtu
+    bool sendClassBreakdown = false; // 六类得分段是否传输（可选）
+    TcpCommConfig tcp;
+    RtuCommConfig rtu;
+};
+
+struct InfrastructureConfig {
+    DatabaseConfig database;
+    ValidationConfig validation;
+    CommConfig comm;
+};
+
 struct PipelineParams {
     int version = 3;
+    std::string inputDir;
     PreprocessParams preprocess;
     std::map<DefectClass, AlgorithmParams> algorithms;
     DecisionParams decision;
     GateParams gate;
+    InfrastructureConfig infrastructure;
 };
 
 }  // namespace model
