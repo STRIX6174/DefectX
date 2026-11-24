@@ -17,7 +17,7 @@
 
 ## English
 
-DefectX is a cross-platform industrial surface defect inspection tool built with C++17 / Qt 6 / OpenCV. It performs automated visual defect detection on metal surfaces, supporting 6 defect types with parallel classification, per-class confidence visualization and run statistics.
+DefectX is a cross-platform industrial surface defect inspection tool built with C++17 / Qt 6 / OpenCV. It performs automated visual defect detection on metal surfaces, supporting 6 defect types with parallel classification, per-class confidence visualization, metric evaluation, SQLite persistence and Modbus reporting to PLC.
 
 ### Supported Defect Types
 
@@ -39,6 +39,10 @@ DefectX is a cross-platform industrial surface defect inspection tool built with
 - Per-class confidence score bars + click-to-filter legend (single-class view)
 - Progress tracking with cancel support and per-image timeout
 - Run statistics in the status bar (total / success / failed / avg / P95 latency)
+- Metric evaluation: 6×6 confusion matrix, per-class Precision/Recall/F1, macro-average (skips invalid classes), Unknown as an independent class
+- SQLite persistence: four-table schema (runs / measurements / class_metrics / run_metrics) with batch transactions for traceability
+- Modbus communication: PC slave / PLC master polling (function 0x03), 17 holding registers, CRC16, RTU/TCP sharing one PDU layer
+- Ground-truth parsed from parent folder name (NEU-CLS structure)
 - CSV / JSON report generator and JSON parameter loader
 
 ### Architecture
@@ -48,6 +52,7 @@ DefectX is a cross-platform industrial surface defect inspection tool built with
 | model | `src/model` | Header-only data types (scores, params, reports) |
 | algorithm | `src/algorithm` | Preprocessing, six defect detectors, result fusion (no Qt) |
 | application | `src/application` | Pipeline runner, parallel classifier, image loader, config, report (no Qt) |
+| infrastructure | `src/infrastructure` | SQLite store, metric calculator, Modbus comm, ground truth (no Qt) |
 | ui | `src/ui` | Qt 6 Widgets GUI (P5-styled custom widgets) |
 
 ### Tech Stack
@@ -56,6 +61,8 @@ DefectX is a cross-platform industrial surface defect inspection tool built with
 - **GUI:** Qt 6 (Widgets, Core, Gui — LGPLv3)
 - **Vision:** OpenCV (core, imgproc, imgcodecs)
 - **Concurrency:** std::thread + condition variables
+- **Storage:** SQLite
+- **Communication:** Modbus (RTU/TCP)
 - **Build:** CMake 3.16+
 
 ### Build
@@ -85,7 +92,7 @@ ninja
 
 ## 中文
 
-DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检测工具。支持 6 种缺陷类型的并行分类、逐类置信度可视化与运行统计。
+DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检测工具。支持 6 种缺陷类型的并行分类、逐类置信度可视化、指标评估、SQLite 落库追溯与 Modbus 上报 PLC。
 
 ### 支持缺陷类型
 
@@ -107,6 +114,10 @@ DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检�
 - 六类置信度得分条 + 图例点击「只看某类」
 - 进度回调 + 随时取消 + 单图超时保护
 - 状态栏运行统计（总数 / 成功 / 失败 / 平均 / P95 耗时）
+- 指标评估：6×6 混淆矩阵、每类 Precision/Recall/F1、Macro 平均（跳过无效类）、Unknown 独立于混淆矩阵
+- SQLite 持久化：四表 Schema（runs / measurements / class_metrics / run_metrics）+ 批量事务，检测结果可追溯
+- Modbus 通讯：PC 从站 / PLC 主站轮询（功能码 0x03），17 个保持寄存器，CRC16 校验，RTU/TCP 共享同一套 PDU
+- 真值标注：父文件夹名解析（NEU-CLS 目录结构）
 - 内置 CSV / JSON 报告生成器与 JSON 参数加载器
 
 ### 架构
@@ -116,6 +127,7 @@ DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检�
 | model | `src/model` | 纯头文件数据类型（得分、参数、报告） |
 | algorithm | `src/algorithm` | 预处理、六类检测算子、结果融合（不依赖 Qt） |
 | application | `src/application` | 流水线执行、并行分类器、图像加载、配置、报告（不依赖 Qt） |
+| infrastructure | `src/infrastructure` | SQLite 存储、指标计算、Modbus 通讯、真值标注（不依赖 Qt） |
 | ui | `src/ui` | Qt 6 Widgets 界面（P5 风格自绘控件） |
 
 ### 技术栈
@@ -124,6 +136,8 @@ DefectX 是一款基于 C++17 / Qt 6 / OpenCV 的跨平台工业表面缺陷检�
 - **界面:** Qt 6 (Widgets, Core, Gui — LGPLv3)
 - **视觉:** OpenCV (core, imgproc, imgcodecs)
 - **并发:** std::thread + 条件变量
+- **存储:** SQLite
+- **通讯:** Modbus (RTU/TCP)
 - **构建:** CMake 3.16+
 
 ### 构建
